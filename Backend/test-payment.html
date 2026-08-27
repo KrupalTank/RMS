@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Razorpay Test Payment</title>
+</head>
+<body>
+
+<h2>RMS Razorpay Test Payment</h2>
+
+<button id="payButton">Pay ₹57,800</button>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+<script>
+document.getElementById("payButton").onclick = function () {
+
+    const options = {
+        key: "rzp_test_TQ151IWH8RF42H",
+
+        amount: 5780000,
+        currency: "INR",
+
+        name: "RMS",
+        description: "Rental Booking Test",
+
+        order_id: "order_TRhk26Cg1IvPCF",
+
+        handler: function (response) {
+
+            console.log("PAYMENT SUCCESS");
+            console.log("razorpay_payment_id:", response.razorpay_payment_id);
+            console.log("razorpay_order_id:", response.razorpay_order_id);
+            console.log("razorpay_signature:", response.razorpay_signature);
+
+            alert(
+                "Payment successful!\n\n" +
+                "Payment ID: " + response.razorpay_payment_id +
+                "\n\nOrder ID: " + response.razorpay_order_id +
+                "\n\nSignature: " + response.razorpay_signature
+            );
+        },
+
+        prefill: {
+            name: "Customer",
+            email: "yourcustomer@email.com",
+            contact: "9876543210"
+        },
+
+        theme: {
+            color: "#3399cc"
+        }
+    };
+
+    const rzp = new Razorpay(options);
+
+    rzp.open();
+};
+</script>
+
+</body>
+</html>
