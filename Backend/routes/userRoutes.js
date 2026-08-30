@@ -45,4 +45,5 @@ router.post('/cancelOrder', validateRequired(['order_id']), orderController.canc
 // Reviews
 router.post('/review/:id', validateRequired(['rating', 'comment']), userController.postReview);
 
+router.get('/myCoupons', userController.getMyCoupons);
 module.exports = router;

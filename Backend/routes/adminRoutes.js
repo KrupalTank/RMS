@@ -26,4 +26,6 @@ router.post('/createPayoutOrder', validateRequired(['payout_id']), adminControll
 router.post('/triggerLostOrdersCheck', adminController.triggerLostOrdersCheck);
 router.get('/transactionLedger', adminController.getTransactionLedger);
 
+router.post('/pardonDelinquentUser', validateRequired(['userId']), adminController.pardonDelinquentUser);
+
 module.exports = router;

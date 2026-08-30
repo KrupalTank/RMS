@@ -289,3 +289,41 @@ exports.postReview = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to post review.' });
   }
 };
+
+// Inside getMyCoupons in RMS/Backend/controllers/userController.js
+exports.getMyCoupons = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // 1. Fetch all available unredeemed coupons (Always usable by customer)
+    const couponsRes = await pool.query(
+      `SELECT id, code, discount_percent, status, created_at
+       FROM coupons
+       WHERE user_id = $1 AND status = 'AVAILABLE'
+       ORDER BY created_at DESC`,
+      [userId]
+    );
+
+    // 2. Fetch user's streak & active violation count
+    const userRes = await pool.query(
+      'SELECT consecutive_good_returns, late_returns_count FROM users WHERE id = $1',
+      [userId]
+    );
+
+    const currentStreak = userRes.rows[0]?.consecutive_good_returns || 0;
+    const lateReturnsCount = userRes.rows[0]?.late_returns_count || 0;
+    const milestoneTarget = parseInt(process.env.LOYALTY_THRESHOLD_ORDERS || 8, 10);
+
+    return res.status(200).json({
+      success: true,
+      coupons: couponsRes.rows,
+      consecutive_good_returns: currentStreak,
+      late_returns_count: lateReturnsCount,
+      milestone_target: milestoneTarget,
+      contact_support_email: process.env.ContactMe || 'support@rms.com',
+    });
+  } catch (error) {
+    console.error('Get Coupons Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch coupons.' });
+  }
+};

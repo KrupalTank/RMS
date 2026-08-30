@@ -20,117 +20,160 @@ const formatDate = (d) => {
  */
 function generateCustomerInvoicePDF({ customer, parentOrder, subOrders, paymentDetails }) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 40, size: 'A4' });
+    const doc = new PDFDocument({ margin: 36, size: 'A4' });
     const buffers = [];
 
     doc.on('data', buffers.push.bind(buffers));
     doc.on('end', () => resolve(Buffer.concat(buffers)));
     doc.on('error', reject);
 
-    // --- COLOR PALETTE ---
-    const primaryColor = '#1E40AF'; // Royal Blue
-    const darkTextColor = '#1F2937';
-    const grayTextColor = '#4B5563';
-    const lightBg = '#F3F4F6';
-    const borderColor = '#E5E7EB';
+    // --- COLOR PALETTE (Clean Corporate Slate & Royal Indigo) ---
+    const primaryHeader = '#1E1B4B'; // Deep Indigo (High Contrast Dark Background)
+    const brandBlue = '#2563EB';     // Accent Blue
+    const textDark = '#0F172A';       // Slate 900
+    const textMuted = '#475569';      // Slate 600
+    const lightCardBg = '#F8FAFC';    // Slate 50
+    const borderCard = '#CBD5E1';     // Slate 300
+    const discountGreen = '#047857';  // Emerald Green for loyalty discount
 
     // --- HEADER BAR ---
-    doc.rect(40, 40, 515, 60).fill(primaryColor);
-    doc.fillColor('#FFFFFF').fontSize(18).font('Helvetica-Bold').text('RENTAL MANAGEMENT SYSTEM', 55, 52);
-    doc.fontSize(10).font('Helvetica').text('Official Booking & Escrow Tax Invoice', 55, 75);
+    doc.rect(36, 36, 523, 62).fill(primaryHeader);
+    doc.fillColor('#FFFFFF').fontSize(16).font('Helvetica-Bold').text('RENTAL MANAGEMENT SYSTEM', 50, 48);
+    doc.fillColor('#93C5FD').fontSize(9.5).font('Helvetica').text('Official Booking Tax & Escrow Deposit Invoice', 50, 70);
 
     // --- INVOICE & CUSTOMER INFO BOX ---
-    doc.rect(40, 115, 515, 80).fillAndStroke('#F9FAFB', borderColor);
+    doc.rect(36, 110, 523, 76).fillAndStroke(lightCardBg, borderCard);
 
-    // Left Column: Customer Details
-    doc.fillColor(primaryColor).fontSize(10).font('Helvetica-Bold').text('BILLED TO:', 55, 125);
-    doc.fillColor(darkTextColor).font('Helvetica-Bold').fontSize(11).text(customer.full_name || 'Valued Customer', 55, 140);
-    doc.fillColor(grayTextColor).font('Helvetica').fontSize(9)
-      .text(`Email: ${customer.email || 'N/A'}`, 55, 155)
-      .text(`City: ${customer.city || 'N/A'}`, 55, 168);
+    // Left Column: Customer Info
+    doc.fillColor(brandBlue).fontSize(9).font('Helvetica-Bold').text('BILLED TO', 50, 118);
+    doc.fillColor(textDark).fontSize(10.5).font('Helvetica-Bold').text(customer.full_name || 'Valued Customer', 50, 131);
+    doc.fillColor(textMuted).fontSize(8.5).font('Helvetica')
+      .text(`Email: ${customer.email || 'N/A'}`, 50, 146)
+      .text(`City: ${customer.city || 'N/A'}`, 50, 159);
 
-    // Right Column: Order & Payment Details
+    // Right Column: Order & Transaction Identifiers
     const invoiceDate = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-    doc.fillColor(primaryColor).fontSize(10).font('Helvetica-Bold').text('INVOICE DETAILS:', 340, 125);
-    doc.fillColor(grayTextColor).font('Helvetica').fontSize(9)
-      .text(`Group Order ID: #${parentOrder.group_id}`, 340, 140)
-      .text(`Payment ID: ${paymentDetails.razorpay_payment_id || 'N/A'}`, 340, 153)
-      .text(`Invoice Date: ${invoiceDate}`, 340, 166);
+    doc.fillColor(brandBlue).fontSize(9).font('Helvetica-Bold').text('TRANSACTION RECEIPT', 340, 118);
+    doc.fillColor(textMuted).fontSize(8.5).font('Helvetica')
+      .text(`Group Order ID: #${parentOrder.group_id}`, 340, 131)
+      .text(`Payment ID: ${paymentDetails.razorpay_payment_id || 'N/A'}`, 340, 145)
+      .text(`Invoice Date: ${invoiceDate}`, 340, 159);
 
     // --- TABLE HEADERS ---
-    const tableTop = 215;
-    doc.rect(40, tableTop, 515, 22).fill('#1E3A8A');
-    doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(8.5);
-    doc.text('ITEM DESCRIPTION', 50, tableTop + 6);
-    doc.text('VENDOR', 190, tableTop + 6);
-    doc.text('RENTAL DATES', 280, tableTop + 6);
-    doc.text('QTY', 390, tableTop + 6, { width: 25, align: 'center' });
-    doc.text('RENT (INR)', 425, tableTop + 6, { width: 55, align: 'right' });
-    doc.text('DEPOSIT (INR)', 485, tableTop + 6, { width: 60, align: 'right' });
+    const tableTop = 198;
+    doc.rect(36, tableTop, 523, 22).fill('#334155'); // Slate 700 Header
+    doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(7.5);
+    doc.text('ITEM DESCRIPTION', 44, tableTop + 7);
+    doc.text('VENDOR', 160, tableTop + 7);
+    doc.text('DATES (DAYS)', 236, tableTop + 7);
+    doc.text('QTY', 332, tableTop + 7, { width: 22, align: 'center' });
+    doc.text('RENT (INR)', 360, tableTop + 7, { width: 56, align: 'right' });
+    doc.text('DISCOUNT', 422, tableTop + 7, { width: 50, align: 'right' });
+    doc.text('DEPOSIT (INR)', 478, tableTop + 7, { width: 73, align: 'right' });
 
     // --- TABLE ROWS ---
     let y = tableTop + 22;
-    let totalRent = 0;
-    let totalDeposit = 0;
+    let sumGrossRent = 0;
+    let sumDiscount = 0;
+    let sumPaidRent = 0;
+    let sumDeposit = 0;
 
     subOrders.forEach((item, index) => {
-      const rowBg = index % 2 === 0 ? '#FFFFFF' : '#F9FAFB';
-      doc.rect(40, y, 515, 28).fillAndStroke(rowBg, borderColor);
+      const rowBg = index % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
+      doc.rect(36, y, 523, 26).fillAndStroke(rowBg, '#E2E8F0');
 
-      const itemRent = parseFloat(item.rent_per_day_snapshot || item.rent_amount || 0) * (item.quantity || 1);
-      const itemDeposit = parseFloat(item.deposit_per_item_snapshot || 0) * (item.quantity || 1);
-      totalRent += itemRent;
-      totalDeposit += itemDeposit;
+      const start = new Date(item.start_date);
+      const end = new Date(item.end_date);
+      const totalDays = Math.ceil(Math.abs(end - start) / (1000 * 60 * 60 * 24)) + 1;
 
-      const dateStr = `${formatDate(item.start_date)} to ${formatDate(item.end_date)}`;
+      const grossRent = parseFloat(item.gross_rent_snapshot || (parseFloat(item.rent_per_day_snapshot || 0) * item.quantity * totalDays));
+      const discount = parseFloat(item.discount_amount_snapshot || 0);
+      const paidRent = parseFloat(item.customer_paid_rent_snapshot || (grossRent - discount));
+      const deposit = parseFloat(item.deposit_per_item_snapshot || 0) * item.quantity;
 
-      doc.fillColor(darkTextColor).font('Helvetica-Bold').fontSize(8.5)
-        .text(item.product_title || 'Rental Item', 50, y + 8, { width: 135, lineBreak: false, ellipsis: true });
+      sumGrossRent += grossRent;
+      sumDiscount += discount;
+      sumPaidRent += paidRent;
+      sumDeposit += deposit;
 
-      doc.font('Helvetica').fontSize(8)
-        .text(item.vendor_name || 'Vendor', 190, y + 8, { width: 85, lineBreak: false, ellipsis: true })
-        .text(dateStr, 280, y + 8, { width: 105, lineBreak: false, ellipsis: true });
+      const dateSummary = `${formatDate(item.start_date)} (${totalDays}d)`;
 
-      doc.text(String(item.quantity || 1), 390, y + 8, { width: 25, align: 'center' });
-      doc.text(itemRent.toFixed(2), 425, y + 8, { width: 55, align: 'right' });
-      doc.text(itemDeposit.toFixed(2), 485, y + 8, { width: 60, align: 'right' });
+      // Item Title
+      doc.fillColor(textDark).font('Helvetica-Bold').fontSize(8)
+        .text(item.product_title || 'Rental Equipment', 44, y + 8, { width: 112, lineBreak: false, ellipsis: true });
 
-      y += 28;
+      // Vendor Name
+      doc.font('Helvetica').fontSize(7.5).fillColor(textMuted)
+        .text(item.vendor_name || 'Verified Vendor', 160, y + 8, { width: 72, lineBreak: false, ellipsis: true })
+        .text(dateSummary, 236, y + 8, { width: 92, lineBreak: false, ellipsis: true });
+
+      // Qty
+      doc.text(String(item.quantity || 1), 332, y + 8, { width: 22, align: 'center' });
+
+      // Gross Rent
+      doc.text(grossRent.toFixed(2), 360, y + 8, { width: 56, align: 'right' });
+
+      // Discount column
+      if (discount > 0) {
+        doc.fillColor(discountGreen).font('Helvetica-Bold')
+          .text(`-${discount.toFixed(2)}`, 422, y + 8, { width: 50, align: 'right' });
+      } else {
+        doc.fillColor(textMuted).font('Helvetica')
+          .text('₹0.00', 422, y + 8, { width: 50, align: 'right' });
+      }
+
+      // Escrow Deposit
+      doc.fillColor(textDark).font('Helvetica')
+        .text(deposit.toFixed(2), 478, y + 8, { width: 73, align: 'right' });
+
+      y += 26;
     });
 
-    // --- TOTALS & SUMMARY BOX ---
-    const summaryTop = y + 15;
-    const grandTotal = totalRent + totalDeposit;
+    // --- TOTALS & SUMMARY CARD ---
+    const summaryTop = y + 14;
+    const grandTotalPaid = sumPaidRent + sumDeposit;
 
-    doc.rect(315, summaryTop, 240, 75).fillAndStroke(lightBg, borderColor);
+    doc.rect(295, summaryTop, 264, sumDiscount > 0 ? 88 : 74).fillAndStroke('#F1F5F9', borderCard);
 
-    doc.font('Helvetica').fontSize(9).fillColor(grayTextColor);
-    doc.text('Total Rental Charges:', 325, summaryTop + 10);
-    doc.text(`INR ${totalRent.toFixed(2)}`, 430, summaryTop + 10, { width: 115, align: 'right' });
+    let currY = summaryTop + 8;
+    doc.font('Helvetica').fontSize(8.5).fillColor(textMuted);
+    doc.text('Gross Rental Charges:', 307, currY);
+    doc.text(`INR ${sumGrossRent.toFixed(2)}`, 430, currY, { width: 120, align: 'right' });
 
-    doc.text('Total Security Escrow:', 325, summaryTop + 26);
-    doc.text(`INR ${totalDeposit.toFixed(2)}`, 430, summaryTop + 26, { width: 115, align: 'right' });
+    if (sumDiscount > 0) {
+      currY += 15;
+      doc.fillColor(discountGreen).font('Helvetica-Bold');
+      doc.text('Loyalty Milestone Discount:', 307, currY);
+      doc.text(`- INR ${sumDiscount.toFixed(2)}`, 430, currY, { width: 120, align: 'right' });
+    }
 
-    doc.rect(325, summaryTop + 42, 220, 1).fill('#D1D5DB');
+    currY += 15;
+    doc.fillColor(textMuted).font('Helvetica');
+    doc.text('Refundable Escrow Deposit:', 307, currY);
+    doc.text(`INR ${sumDeposit.toFixed(2)}`, 430, currY, { width: 120, align: 'right' });
 
-    doc.font('Helvetica-Bold').fontSize(10.5).fillColor(primaryColor);
-    doc.text('Grand Total Paid:', 325, summaryTop + 50);
-    doc.text(`INR ${grandTotal.toFixed(2)}`, 430, summaryTop + 50, { width: 115, align: 'right' });
+    currY += 15;
+    doc.rect(307, currY, 240, 1).fill('#CBD5E1');
 
-    // --- ESCROW & LEGAL POLICY FOOTER ---
-    const footerTop = 720;
-    doc.rect(40, footerTop, 515, 50).fillAndStroke('#FEF3C7', '#FDE68A');
-    doc.fillColor('#92400E').font('Helvetica-Bold').fontSize(8.5).text('ESCROW & REFUND POLICY NOTICE', 50, footerTop + 8);
+    currY += 6;
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(brandBlue);
+    doc.text('Total Invoiced Amount Paid:', 307, currY);
+    doc.text(`INR ${grandTotalPaid.toFixed(2)}`, 430, currY, { width: 120, align: 'right' });
+
+    // --- ESCROW & LEGAL POLICY NOTICE FOOTER ---
+    const footerTop = 715;
+    doc.rect(36, footerTop, 523, 52).fillAndStroke('#FEF3C7', '#FDE68A');
+    doc.fillColor('#92400E').font('Helvetica-Bold').fontSize(8).text('ESCROW & SECURITY POLICY NOTICE', 46, footerTop + 7);
     doc.font('Helvetica').fontSize(7.5).fillColor('#78350F').text(
-      'Security deposits are held securely in platform escrow and refunded to your registered bank account upon successful return inspection by the vendor, less any agreed cancellation or late fees.',
-      50,
-      footerTop + 22,
-      { width: 495, lineGap: 2 }
+      'Security deposits are securely held in platform escrow. Upon on-time return and condition verification by the vendor, refundable deposits are released back to your original source account via Razorpay.',
+      46,
+      footerTop + 20,
+      { width: 503, lineGap: 1.5 }
     );
 
-    doc.fillColor('#9CA3AF').fontSize(7).text('Computer-generated tax & escrow invoice. No signature required.', 40, 785, {
+    doc.fillColor('#94A3B8').fontSize(7).text('Authentic computer-generated invoice. No signature required.', 36, 782, {
       align: 'center',
-      width: 515,
+      width: 523,
     });
 
     doc.end();
@@ -142,7 +185,7 @@ function generateCustomerInvoicePDF({ customer, parentOrder, subOrders, paymentD
  */
 function generatePayoutSlipPDF({ recipient, payout, orderDetails }) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 40, size: 'A4' });
+    const doc = new PDFDocument({ margin: 36, size: 'A4' });
     const buffers = [];
 
     doc.on('data', buffers.push.bind(buffers));
@@ -154,63 +197,75 @@ function generatePayoutSlipPDF({ recipient, payout, orderDetails }) {
       payout.type === 'full_refund' ||
       payout.type === 'cancellation_refund_customer';
 
-    const accentColor = isRefund ? '#059669' : '#D97706'; // Emerald Green for refund, Amber for vendor earnings
-    const darkTextColor = '#111827';
-    const grayTextColor = '#4B5563';
-    const borderColor = '#E5E7EB';
+    // Theme Color: Deep Emerald for Customer Refund, Deep Warm Amber/Slate for Vendor Net Income
+    const heroBg = isRefund ? '#065F46' : '#0F172A';
+    const accentColor = isRefund ? '#059669' : '#D97706';
+    const textDark = '#0F172A';
+    const textMuted = '#475569';
+    const borderCard = '#CBD5E1';
 
     // --- HEADER ---
-    doc.rect(40, 40, 515, 60).fill(accentColor);
-    doc.fillColor('#FFFFFF').fontSize(17).font('Helvetica-Bold').text('PAYMENT DISBURSEMENT SLIP', 55, 52);
-    doc.fontSize(10).font('Helvetica').text('Rental Management Platform Official Settlement Receipt', 55, 75);
+    doc.rect(36, 36, 523, 62).fill(heroBg);
+    doc.fillColor('#FFFFFF').fontSize(16).font('Helvetica-Bold').text('PAYMENT DISBURSEMENT SLIP', 50, 48);
+    doc.fillColor(isRefund ? '#A7F3D0' : '#FDE68A').fontSize(9.5).font('Helvetica').text(
+      isRefund ? 'Customer Escrow Refund & Reimbursement Voucher' : 'Vendor Rental Income & Settlement Voucher',
+      50,
+      70
+    );
 
-    // --- DISBURSEMENT SUMMARY HERO CARD ---
-    doc.rect(40, 115, 515, 65).fillAndStroke('#F9FAFB', borderColor);
-    doc.fillColor(grayTextColor).fontSize(9).font('Helvetica').text('SETTLEMENT AMOUNT TRANSFERRED', 55, 127);
-    doc.fillColor(accentColor).fontSize(22).font('Helvetica-Bold').text(`INR ${parseFloat(payout.amount).toFixed(2)}`, 55, 142);
+    // --- HERO AMOUNT DISPLAY ---
+    doc.rect(36, 110, 523, 66).fillAndStroke('#F8FAFC', borderCard);
+    doc.fillColor(textMuted).fontSize(8.5).font('Helvetica-Bold').text('NET AMOUNT DISBURSED', 50, 122);
+    doc.fillColor(accentColor).fontSize(20).font('Helvetica-Bold').text(`INR ${parseFloat(payout.amount).toFixed(2)}`, 50, 137);
 
     const cleanType = String(payout.type || 'SETTLEMENT').toUpperCase().replace(/_/g, ' ');
-    doc.rect(340, 130, 200, 24).fill(accentColor);
-    doc.fillColor('#FFFFFF').fontSize(9).font('Helvetica-Bold').text(cleanType, 340, 137, { width: 200, align: 'center' });
+    doc.rect(330, 126, 215, 26).fill(accentColor);
+    doc.fillColor('#FFFFFF').fontSize(8.5).font('Helvetica-Bold').text(cleanType, 330, 134, { width: 215, align: 'center' });
 
-    // --- SETTLEMENT SPECIFICATIONS (2-COLUMN GRID) ---
-    const gridTop = 195;
-    doc.rect(40, gridTop, 515, 170).fillAndStroke('#FFFFFF', borderColor);
+    // --- 2-COLUMN SETTLEMENT AUDIT GRID ---
+    const gridTop = 188;
+    doc.rect(36, gridTop, 523, 168).fillAndStroke('#FFFFFF', borderCard);
 
-    // Left Column: Recipient Banking Details
-    doc.fillColor(accentColor).fontSize(10).font('Helvetica-Bold').text('BENEFICIARY DETAILS', 55, gridTop + 12);
-    doc.fillColor(darkTextColor).font('Helvetica-Bold').fontSize(10).text(recipient.full_name || 'Account Holder', 55, gridTop + 30);
+    // Left Column: Beneficiary Bank Details
+    doc.fillColor(accentColor).fontSize(9.5).font('Helvetica-Bold').text('BENEFICIARY DETAILS', 50, gridTop + 12);
+    doc.fillColor(textDark).font('Helvetica-Bold').fontSize(10).text(recipient.full_name || 'Account Holder', 50, gridTop + 28);
 
-    doc.fillColor(grayTextColor).font('Helvetica').fontSize(9)
-      .text(`Email: ${recipient.email || 'N/A'}`, 55, gridTop + 48)
-      .text(`Bank A/C: ${recipient.bank_account_no || 'Registered Razorpay Route'}`, 55, gridTop + 64)
-      .text(`IFSC Code: ${recipient.bank_ifsc || 'N/A'}`, 55, gridTop + 80);
+    doc.fillColor(textMuted).font('Helvetica').fontSize(8.5)
+      .text(`Email: ${recipient.email || 'N/A'}`, 50, gridTop + 45)
+      .text(`Bank A/C: ${recipient.bank_account_no || 'Registered Razorpay Route'}`, 50, gridTop + 60)
+      .text(`IFSC Code: ${recipient.bank_ifsc || 'N/A'}`, 50, gridTop + 75);
 
-    // Right Column: Transaction & Audit Reference
-    doc.fillColor(accentColor).fontSize(10).font('Helvetica-Bold').text('TRANSACTION AUDIT', 310, gridTop + 12);
-    doc.fillColor(grayTextColor).font('Helvetica').fontSize(9)
-      .text(`Payout ID: #${payout.id}`, 310, gridTop + 30)
-      .text(`Order Reference: #${payout.order_id}`, 310, gridTop + 48)
-      .text(`Gateway Ref: ${payout.gateway_reference_id || 'RZP-DIRECT-TRANSFER'}`, 310, gridTop + 64)
-      .text(`Disbursed At: ${new Date().toLocaleString('en-IN')}`, 310, gridTop + 80);
+    // Right Column: Transaction Traceability
+    doc.fillColor(accentColor).fontSize(9.5).font('Helvetica-Bold').text('TRANSACTION AUDIT', 320, gridTop + 12);
+    doc.fillColor(textMuted).font('Helvetica').fontSize(8.5)
+      .text(`Payout ID: #${payout.id}`, 320, gridTop + 28)
+      .text(`Order Reference: #${payout.order_id}`, 320, gridTop + 45)
+      .text(`Razorpay Ref: ${payout.gateway_reference_id || 'RZP-DIRECT-TRANSFER'}`, 320, gridTop + 60)
+      .text(`Processed At: ${new Date().toLocaleString('en-IN')}`, 320, gridTop + 75);
 
-    // Bottom Divider within Grid for Order Context
-    doc.rect(55, gridTop + 105, 485, 1).fill(borderColor);
+    // Inner Grid Divider
+    doc.rect(48, gridTop + 100, 499, 1).fill('#E2E8F0');
 
-    doc.fillColor(darkTextColor).font('Helvetica-Bold').fontSize(9).text('Associated Product:', 55, gridTop + 118);
-    doc.fillColor(grayTextColor).font('Helvetica').fontSize(9).text(orderDetails.product_title || 'Rental Item', 165, gridTop + 118, { width: 360, lineBreak: false, ellipsis: true });
+    // Associated Product & Window
+    doc.fillColor(textDark).font('Helvetica-Bold').fontSize(8.5).text('Rental Equipment:', 50, gridTop + 112);
+    doc.fillColor(textMuted).font('Helvetica').fontSize(8.5).text(
+      orderDetails.product_title || 'Rental Item',
+      160,
+      gridTop + 112,
+      { width: 380, lineBreak: false, ellipsis: true }
+    );
 
-    doc.fillColor(darkTextColor).font('Helvetica-Bold').fontSize(9).text('Rental Window:', 55, gridTop + 138);
+    doc.fillColor(textDark).font('Helvetica-Bold').fontSize(8.5).text('Rental Window:', 50, gridTop + 132);
     const rentalWindow = `${formatDate(orderDetails.start_date)} to ${formatDate(orderDetails.end_date)}`;
-    doc.fillColor(grayTextColor).font('Helvetica').fontSize(9).text(rentalWindow, 165, gridTop + 138);
+    doc.fillColor(textMuted).font('Helvetica').fontSize(8.5).text(rentalWindow, 160, gridTop + 132);
 
-    // --- FOOTER NOTICE ---
-    doc.rect(40, 720, 515, 40).fillAndStroke('#F3F4F6', borderColor);
-    doc.fillColor('#6B7280').font('Helvetica').fontSize(8).text(
-      'This is an authentic, computer-generated transaction settlement voucher issued by Rental Management System. Funds are disbursed electronically via Razorpay Payouts.',
-      50,
-      730,
-      { width: 495, align: 'center', lineGap: 2 }
+    // --- FOOTER ---
+    doc.rect(36, 715, 523, 44).fillAndStroke('#F1F5F9', borderCard);
+    doc.fillColor('#64748B').font('Helvetica').fontSize(7.5).text(
+      'This document confirms electronic fund transfer processed through Razorpay for Rental Management System. All records are cryptographically stored for financial compliance.',
+      46,
+      726,
+      { width: 503, align: 'center', lineGap: 1.5 }
     );
 
     doc.end();

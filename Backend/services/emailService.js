@@ -104,24 +104,41 @@ async function sendPayoutSettlementEmail({ recipient, payout, orderDetails }) {
  */
 async function sendWelcomeEmail({ user }) {
   try {
+    const isVendor = user?.role === 'vendor';
     const roleText = (user?.role || 'customer').toUpperCase();
 
     const mailOptions = {
       from: process.env.EMAIL_FROM,
       to: user.email,
-      subject: 'Welcome to RMS - Account Created Successfully!',
+      subject: isVendor
+        ? 'Welcome Vendor Partner - RMS Partnership & Commission Agreement'
+        : 'Welcome to RMS - Account Created Successfully!',
       html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 20px;">
-          <h2 style="color: #2563EB; margin-top: 0;">Welcome to Rental Management System, ${user.full_name || 'Member'}!</h2>
-          <p>Your account has been created successfully. You can now explore rental equipment or manage your products.</p>
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 24px; background-color: #ffffff;">
+          <h2 style="color: ${isVendor ? '#059669' : '#2563EB'}; margin-top: 0;">
+            ${isVendor ? 'Welcome to RMS Vendor Partner Network' : `Welcome to Rental Management System, ${user.full_name || 'Member'}!`}
+          </h2>
+          <p>Your account has been registered successfully. You can now ${isVendor ? 'list products in the catalog and manage bookings' : 'explore rental equipment'}.</p>
           
-          <div style="background-color: #F3F4F6; padding: 15px; border-radius: 6px; margin: 20px 0; border: 1px solid #E5E7EB;">
-            <p style="margin: 4px 0;"><b>Registered Email:</b> ${user.email}</p>
+          <div style="background-color: #F3F4F6; padding: 15px; border-radius: 6px; margin: 20px 0; border: 1px solid #E5E7EB; font-size: 13px;">
+            <p style="margin: 4px 0;"><b>Registered Name:</b> ${user.full_name}</p>
             <p style="margin: 4px 0;"><b>Account Role:</b> ${roleText}</p>
+            <p style="margin: 4px 0;"><b>Registered Email:</b> ${user.email}</p>
             <p style="margin: 4px 0;"><b>City:</b> ${user.city || 'N/A'}</p>
           </div>
 
-          <p style="font-size: 13px; color: #4B5563;">Complete your profile and submit your identity verification to enjoy lower security deposit requirements.</p>
+          ${
+            isVendor
+              ? `
+          <div style="background-color: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 6px; padding: 16px; margin: 20px 0;">
+            <h4 style="margin: 0 0 8px 0; color: #065F46; font-size: 14px;">📜 Partner Commission & Settlement Agreement</h4>
+            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>10% Platform Commission:</b> Deducted from gross rental income upon product handover to customer.</p>
+            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>90% Net Payout:</b> Transferred directly to your registered bank account via electronic transfer.</p>
+            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>0% Escrow Fee:</b> Customer security deposits are 100% untouched and protected in platform escrow.</p>
+          </div>
+          `
+              : '<p style="font-size: 13px; color: #4B5563;">Complete your KYC verification in your profile to enjoy lower security deposit requirements.</p>'
+          }
           
           <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 20px 0;" />
           <p style="font-size: 12px; color: #6B7280; text-align: center;">Rental Management System Team</p>
@@ -135,7 +152,6 @@ async function sendWelcomeEmail({ user }) {
     console.error('⚠️ Failed to send welcome email:', error.message);
   }
 }
-
 /**
  * 4. Sends KYC Submission Confirmation Email
  */
@@ -289,16 +305,20 @@ async function sendPasswordResetSuccessEmail({ user }) {
 /**
  * 8. Sends Customer Cancellation & Refund Breakdown Email
  */
+// Inside sendCustomerCancellationEmail in RMS/Backend/services/emailService.js
+
 async function sendCustomerCancellationEmail({
   to,
   customerName,
   productTitle,
   orderId,
   cancelledBy,
-  totalRent,
-  totalDeposit,
-  cancellationFeeDeducted,
-  refundAmount,
+  grossRent = 0,
+  discountAmount = 0,
+  actualPaidRent = 0,
+  totalDeposit = 0,
+  cancellationFeeDeducted = 0,
+  refundAmount = 0,
 }) {
   try {
     const isCancelledByCustomer = cancelledBy === 'customer';
@@ -306,40 +326,60 @@ async function sendCustomerCancellationEmail({
     const mailOptions = {
       from: process.env.EMAIL_FROM,
       to,
-      subject: `Booking Cancellation & Refund Breakdown - Order #${orderId}`,
+      subject: `Booking Cancelled: #${orderId} - ${productTitle}`,
       html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 20px;">
-          <h2 style="color: #DC2626; margin-top: 0;">Rental Booking Cancelled</h2>
-          <p>Hi <b>${customerName}</b>,</p>
-          <p>Your booking for <b>${productTitle}</b> (Order <b>#${orderId}</b>) has been cancelled ${
-            isCancelledByCustomer ? 'by you' : 'by the vendor/admin'
-          }.</p>
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 24px; background-color: #111827; color: #F9FAFB;">
+          <h2 style="color: #F87171; margin-top: 0; font-size: 20px;">Rental Booking Cancelled</h2>
+          <p style="color: #E5E7EB;">Hi <b>${customerName || 'Customer'}</b>,</p>
+          <p style="color: #9CA3AF;">Your booking for <b>${productTitle}</b> (Order #${orderId}) has been cancelled by ${isCancelledByCustomer ? 'you' : 'the vendor'}.</p>
           
-          <div style="background-color: #F9FAFB; padding: 15px; border-radius: 6px; margin: 20px 0; border: 1px solid #E5E7EB;">
-            <h4 style="margin-top: 0; color: #374151; border-bottom: 1px solid #E5E7EB; padding-bottom: 8px;">Refund & Deduction Breakdown</h4>
-            <p style="margin: 6px 0; font-size: 13px;"><b>Rental Fee Refund (100%):</b> ₹${parseFloat(totalRent).toFixed(2)}</p>
-            <p style="margin: 6px 0; font-size: 13px;"><b>Escrow Deposit:</b> ₹${parseFloat(totalDeposit).toFixed(2)}</p>
-            ${
-              isCancelledByCustomer && parseFloat(cancellationFeeDeducted) > 0
-                ? `<p style="margin: 6px 0; font-size: 13px; color: #DC2626;"><b>Vendor Cancellation Fee Deducted:</b> -₹${parseFloat(cancellationFeeDeducted).toFixed(2)}</p>`
-                : '<p style="margin: 6px 0; font-size: 13px; color: #059669;"><b>Cancellation Fee:</b> ₹0.00 (Full 100% Refund)</p>'
-            }
-            <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 10px 0;" />
-            <p style="margin: 6px 0; font-size: 15px; font-weight: bold; color: #059669;"><b>Total Refund Disbursed to You:</b> ₹${parseFloat(refundAmount).toFixed(2)}</p>
+          <div style="background-color: #1F2937; border: 1px solid #374151; border-radius: 8px; padding: 16px; margin: 20px 0;">
+            <h4 style="margin: 0 0 12px 0; color: #E5E7EB; font-size: 14px; border-bottom: 1px solid #374151; pb-2;">Refund & Deduction Breakdown</h4>
+            
+            <table style="width: 100%; font-size: 13px; color: #D1D5DB; border-collapse: collapse;">
+              <tr>
+                <td style="padding: 4px 0;">Gross Listed Rent:</td>
+                <td style="text-align: right; font-weight: bold; color: #F9FAFB;">₹${grossRent.toFixed(2)}</td>
+              </tr>
+              ${
+                discountAmount > 0
+                  ? `<tr>
+                      <td style="padding: 4px 0; color: #34D399;">Loyalty Voucher Applied:</td>
+                      <td style="text-align: right; font-weight: bold; color: #34D399;">- ₹${discountAmount.toFixed(2)}</td>
+                    </tr>`
+                  : ''
+              }
+              <tr>
+                <td style="padding: 4px 0;">Actual Rental Fee Paid (100% Refundable):</td>
+                <td style="text-align: right; font-weight: bold; color: #F9FAFB;">₹${actualPaidRent.toFixed(2)}</td>
+              </tr>
+              <tr>
+                <td style="padding: 4px 0;">Security Escrow Deposit:</td>
+                <td style="text-align: right; font-weight: bold; color: #F9FAFB;">₹${totalDeposit.toFixed(2)}</td>
+              </tr>
+              ${
+                cancellationFeeDeducted > 0
+                  ? `<tr>
+                      <td style="padding: 4px 0; color: #F87171;">Vendor Cancellation Fee Deducted:</td>
+                      <td style="text-align: right; font-weight: bold; color: #F87171;">- ₹${cancellationFeeDeducted.toFixed(2)}</td>
+                    </tr>`
+                  : ''
+              }
+              <tr style="border-top: 1px solid #374151;">
+                <td style="padding: 10px 0 0 0; font-weight: bold; color: #34D399; font-size: 14px;">Total Refund Disbursed to You:</td>
+                <td style="padding: 10px 0 0 0; text-align: right; font-weight: bold; color: #34D399; font-size: 15px;">₹${refundAmount.toFixed(2)}</td>
+              </tr>
+            </table>
           </div>
 
-          <p style="font-size: 13px; color: #4B5563;">Our automated payout system has recorded your refund. The funds will be transferred to your registered bank account via Razorpay once verified by our accounts team.</p>
-          
-          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 20px 0;" />
-          <p style="font-size: 12px; color: #6B7280; text-align: center;">Rental Management System Accounts Team</p>
+          <p style="font-size: 12px; color: #9CA3AF;">Refunds are credited to your registered bank account via electronic transfer within standard banking windows.</p>
         </div>
       `,
     };
 
     await transporter.sendMail(mailOptions);
-    console.log(`📧 Customer cancellation refund email sent to ${to}`);
   } catch (error) {
-    console.error('⚠️ Failed to send customer cancellation email:', error.message);
+    console.error('Failed to send cancellation email:', error);
   }
 }
 
@@ -515,6 +555,48 @@ async function sendAccountBlockedEmail({
   }
 }
 
+/**
+ * 12. Sends Milestone Reward Email when Customer Unlocks a 10% Discount Coupon Card
+ */
+async function sendCouponUnlockedEmail({ to, userName, couponCode, discountPercent = 10 }) {
+  try {
+    const mailOptions = {
+      from: process.env.EMAIL_FROM,
+      to,
+      subject: '🎉 Congratulations! You Unlocked a 10% Rental Privilege Voucher - RMS',
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 20px;">
+          <h2 style="color: #059669; margin-top: 0;">🎉 Loyalty Milestone Reached!</h2>
+          <p>Hi <b>${userName || 'Valued Renter'}</b>,</p>
+          <p>Thank you for being an outstanding member of the Rental Management System community. You have completed <b>8 consecutive on-time and undamaged returns</b>.</p>
+          
+          <div style="background: linear-gradient(135deg, #10B981 0%, #059669 100%); color: white; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+            <p style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: #D1FAE5;">Exclusive Privilege Card</p>
+            <h1 style="margin: 10px 0; font-size: 28px; letter-spacing: 2px;">${couponCode}</h1>
+            <p style="margin: 0; font-size: 15px; font-weight: bold;">${discountPercent}% OFF On Your Next Selected Rental Item</p>
+          </div>
+
+          <div style="background-color: #F9FAFB; padding: 15px; border-radius: 6px; border: 1px solid #E5E7EB; font-size: 13px;">
+            <p style="margin: 4px 0;"><b>How to redeem:</b></p>
+            <p style="margin: 4px 0; color: #4B5563;">• Add any item to your cart and proceed to checkout.</p>
+            <p style="margin: 4px 0; color: #4B5563;">• Toggle the <b>"Apply 10% Loyalty Coupon"</b> option on your preferred cart item.</p>
+            <p style="margin: 4px 0; color: #4B5563;">• Enjoy instant savings deducted directly from your rental subtotal.</p>
+          </div>
+          
+          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 20px 0;" />
+          <p style="font-size: 12px; color: #6B7280; text-align: center;">Rental Management System Loyalty Rewards</p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log(`📧 Milestone reward email sent to ${to}`);
+  } catch (error) {
+    console.error('⚠️ Failed to send milestone reward email:', error.message);
+  }
+}
+
+
 module.exports = {
   sendBookingConfirmationEmail,
   sendPayoutSettlementEmail,
@@ -527,4 +609,5 @@ module.exports = {
   sendVendorCancellationEmail,
   sendDepositForfeitureEmail,
   sendAccountBlockedEmail,
+  sendCouponUnlockedEmail,
 };

@@ -11,8 +11,9 @@ async function processLostOrders() {
   try {
     await client.query('BEGIN');
 
+    // 1. Fetch overdue orders beyond max allowed late days (include product_id)
     const lostOrdersQuery = `
-      SELECT o.id, o.vendor_id, o.customer_id, o.group_id, o.quantity, o.deposit_per_item_snapshot
+      SELECT o.id, o.vendor_id, o.customer_id, o.product_id, o.group_id, o.quantity, o.deposit_per_item_snapshot
       FROM orders o
       WHERE o.status = 'With Customer' 
         AND CURRENT_DATE > (o.end_date + o.max_late_days)
@@ -23,47 +24,52 @@ async function processLostOrders() {
     const processedOrders = [];
 
     for (const order of lostOrders) {
-      const totalDeposit = order.deposit_per_item_snapshot * order.quantity;
+      const totalDeposit = parseFloat(order.deposit_per_item_snapshot) * order.quantity;
 
-      // 1. Mark order status as Lost
+      // 2. Mark order status as Lost
       await client.query(
         "UPDATE orders SET status = 'Lost', payment_status = 'Full' WHERE id = $1",
         [order.id]
       );
 
-      // 2. Forfeit full deposit to vendor
+      // 3. Forfeit full deposit to vendor
       await client.query(
         `INSERT INTO payouts (order_id, recipient_id, group_id, amount, type)
          VALUES ($1, $2, $3, $4, 'deposit_forfeit_vendor')`,
         [order.id, order.vendor_id, order.group_id, totalDeposit]
       );
 
-      // 3. Increment customer delinquency counter
+      // 4. Increment delinquency counter & reset loyalty streak to 0
       await client.query(
-        'UPDATE users SET late_returns_count = late_returns_count + 1 WHERE id = $1',
+        `UPDATE users 
+         SET late_returns_count = COALESCE(late_returns_count, 0) + 1,
+             consecutive_good_returns = 0
+         WHERE id = $1`,
         [order.customer_id]
       );
 
-
-      // 4. Deduct lost units from vendor's total inventory (floor at 0)
+      // 5. Deduct lost units from vendor's total inventory (floor at 0)
       await client.query(
         `UPDATE products 
-        SET total_quantity = GREATEST(0, total_quantity - $1),
-            updated_at = CURRENT_TIMESTAMP 
-        WHERE id = $2`,
+         SET total_quantity = GREATEST(0, total_quantity - $1),
+             updated_at = CURRENT_TIMESTAMP 
+         WHERE id = $2`,
         [order.quantity, order.product_id]
       );
 
-      processedOrders.push({ orderId: order.id, customerId: order.customer_id, forfeitedDeposit: totalDeposit });
-      console.log(`🚨 Marked Order #${order.id} as LOST. Deposit forfeited to Vendor.`);
+      processedOrders.push({
+        orderId: order.id,
+        customerId: order.customer_id,
+        forfeitedDeposit: totalDeposit,
+      });
 
-      // Fetch customer, product & vendor details for email dispatch
+      // 6. Fetch details for notification email
       const customerNoticeQuery = await client.query(
         `SELECT u.email, u.full_name, p.title AS product_title, v.full_name AS vendor_name
-        FROM users u
-        JOIN products p ON p.id = $1
-        JOIN users v ON v.id = $2
-        WHERE u.id = $3`,
+         FROM users u
+         JOIN products p ON p.id = $1
+         JOIN users v ON v.id = $2
+         WHERE u.id = $3`,
         [order.product_id, order.vendor_id, order.customer_id]
       );
 
@@ -76,16 +82,15 @@ async function processLostOrders() {
           vendorName: details.vendor_name,
           orderId: order.id,
           forfeitedAmount: totalDeposit,
-          reason: 'Non-return exceeding maximum late grace window (Marked Lost)',
+          reason: 'Return period exceeded the maximum allowed grace window. Order marked as Lost.',
         });
       }
-
     }
 
     await client.query('COMMIT');
     return { success: true, count: processedOrders.length, processedOrders };
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Process Lost Orders Error:', err.message);
     throw err;
   } finally {
@@ -94,7 +99,7 @@ async function processLostOrders() {
 }
 
 function initCronJobs() {
-  // Cron Job 1: Every 5 minutes - Delete uncompleted parent orders older than 15 minutes
+  // Cron Job 1: Every 5 minutes - Delete uncompleted parent orders older than 5 minutes
   cron.schedule('*/5 * * * *', async () => {
     try {
       const expiredQuery = `
@@ -114,7 +119,7 @@ function initCronJobs() {
     }
   });
 
-  // Cron Job 2: Daily at 9:00 PM sharp (21:00 Indian Standard Time)
+  // Cron Job 2: Daily at 9:00 PM IST (21:00)
   cron.schedule(
     '0 21 * * *',
     async () => {
@@ -133,4 +138,3 @@ function initCronJobs() {
 }
 
 module.exports = { initCronJobs, processLostOrders };
-

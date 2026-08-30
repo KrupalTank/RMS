@@ -1,8 +1,9 @@
+// src/pages/auth/Signup.jsx
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../api/axiosInstance';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, ShieldCheck } from 'lucide-react';
 
 const Signup = () => {
   const [formData, setFormData] = useState({
@@ -15,6 +16,7 @@ const Signup = () => {
     bank_account_no: '',
     bank_ifsc: '',
   });
+  const [agreedToVendorTerms, setAgreedToVendorTerms] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
@@ -25,25 +27,32 @@ const Signup = () => {
   };
 
   const handleSubmit = async (e) => {
-  e.preventDefault();
-  setError('');
-  setLoading(true);
+    e.preventDefault();
+    setError('');
 
-  try {
-    const res = await api.post('/auth/signup', formData);
-    if (res.data.success) {
-      const newUser = res.data.user;
-      login(newUser);
-
-      if (newUser.role === 'vendor') navigate('/vendor/dashboard');
-      else navigate('/');
+    if (formData.role === 'vendor' && !agreedToVendorTerms) {
+      setError('You must review and accept the 10% Platform Commission Policy to register as a Vendor.');
+      return;
     }
-  } catch (err) {
-    setError(err.response?.data?.message || 'Registration failed. Please try again.');
-  } finally {
-    setLoading(false);
-  }
-};
+
+    setLoading(true);
+
+    try {
+      const res = await api.post('/auth/signup', formData);
+      if (res.data.success) {
+        const newUser = res.data.user;
+        login(newUser);
+
+        if (newUser.role === 'vendor') navigate('/vendor/dashboard');
+        else navigate('/');
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Registration failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-[85vh] flex items-center justify-center bg-gray-50 py-10 px-4 sm:px-6 lg:px-8">
       <div className="max-w-lg w-full space-y-6 bg-white p-8 rounded-xl shadow-sm border border-gray-200">
@@ -172,9 +181,32 @@ const Signup = () => {
             </div>
           </div>
 
+          {/* Vendor Mandatory Commission Agreement */}
+          {formData.role === 'vendor' && (
+            <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-200 text-xs text-emerald-900 space-y-2.5">
+              <div className="flex items-center gap-1.5 font-bold text-emerald-950">
+                <ShieldCheck className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                <span>RMS Vendor Partner & Commission Agreement</span>
+              </div>
+              <p className="text-[11px] text-emerald-800 leading-relaxed">
+                By registering as a Vendor on RMS, you agree that a fixed <b>10% platform commission fee</b> is deducted from gross rental income upon product handover. Security deposits are non-commissionable (100% held in escrow for repair/damage protection).
+              </p>
+              <label className="flex items-center gap-2 pt-1 font-semibold text-emerald-950 cursor-pointer">
+                <input
+                  type="checkbox"
+                  required
+                  checked={agreedToVendorTerms}
+                  onChange={(e) => setAgreedToVendorTerms(e.target.checked)}
+                  className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 border-gray-300"
+                />
+                <span>I understand and agree to the 10% Platform Commission Policy</span>
+              </label>
+            </div>
+          )}
+
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || (formData.role === 'vendor' && !agreedToVendorTerms)}
             className="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition"
           >
             {loading ? 'Creating Account...' : 'Complete Registration'}

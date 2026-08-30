@@ -1,3 +1,4 @@
+// src/pages/customer/CustomerOrders.jsx
 import React, { useState, useEffect } from 'react';
 import { io } from 'socket.io-client';
 import api from '../../api/axiosInstance';
@@ -14,6 +15,7 @@ import {
   RefreshCw,
   AlertCircle,
   X,
+  Tag,
 } from 'lucide-react';
 
 const CustomerOrders = () => {
@@ -56,7 +58,6 @@ const CustomerOrders = () => {
     }
   };
 
-  // 1. Fetch Orders from Backend
   const fetchOrders = async () => {
     try {
       const res = await api.get('/user/getOrders');
@@ -73,7 +74,6 @@ const CustomerOrders = () => {
   useEffect(() => {
     fetchOrders();
 
-    // 2. Real-Time Socket Connection for Instant Status Updates
     const socket = io('http://localhost:5000', { withCredentials: true });
 
     socket.on('ORDER_STATUS_CHANGED', (data) => {
@@ -91,7 +91,6 @@ const CustomerOrders = () => {
     };
   }, [user?.id]);
 
-  // 3. Customer Handover Confirmation Handler (Lock -> With Customer)
   const handleConfirmHandover = async (orderId) => {
     setActionLoadingId(orderId);
     setError('');
@@ -110,7 +109,6 @@ const CustomerOrders = () => {
     }
   };
 
-  // 4. Submit Review Handler
   const handlePostReview = async (e) => {
     e.preventDefault();
     setReviewSubmitting(true);
@@ -124,7 +122,6 @@ const CustomerOrders = () => {
 
       if (res.data.success) {
         setReviewMessage({ success: 'Thank you! Your review has been recorded.', error: '' });
-        // Update local order list to reflect submitted review
         setOrders((prev) =>
           prev.map((o) =>
             o.id === activeReviewOrder.id
@@ -148,7 +145,6 @@ const CustomerOrders = () => {
     }
   };
 
-  // Status Badge Helper
   const getStatusBadge = (status) => {
     switch (status) {
       case 'Lock':
@@ -242,6 +238,7 @@ const CustomerOrders = () => {
               ? JSON.parse(order.product_images || '[]')
               : [];
             const primaryImg = images[0] || 'https://placehold.co/300x200?text=No+Image';
+            const discountApplied = parseFloat(order.discount_amount_snapshot || 0);
 
             return (
               <div
@@ -257,6 +254,11 @@ const CustomerOrders = () => {
                     <span className="text-[11px] text-gray-400">
                       Booked on: {new Date(order.created_at).toLocaleDateString()}
                     </span>
+                    {discountApplied > 0 && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                        <Tag className="w-3 h-3" /> 10% Loyalty Discount Applied (-₹{discountApplied.toFixed(2)})
+                      </span>
+                    )}
                   </div>
                   {getStatusBadge(order.status)}
                 </div>
@@ -298,6 +300,12 @@ const CustomerOrders = () => {
                         ₹{parseFloat(order.rent_per_day_snapshot).toFixed(2)}/day
                       </span>
                     </div>
+                    {discountApplied > 0 && (
+                      <div className="flex justify-between text-emerald-600 font-semibold">
+                        <span>Discounted Rent Paid:</span>
+                        <span>₹{parseFloat(order.customer_paid_rent_snapshot || 0).toFixed(2)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between">
                       <span>Security Escrow:</span>
                       <span className="font-semibold text-gray-900">
@@ -312,7 +320,6 @@ const CustomerOrders = () => {
 
                   {/* Action Column (3 cols) */}
                   <div className="md:col-span-3 flex flex-col items-end justify-center gap-2">
-                    {/* Handover Button when status is 'Lock' */}
                     {order.status === 'Lock' && (
                       <div className="flex flex-col gap-2 w-full">
                         <button
@@ -333,7 +340,6 @@ const CustomerOrders = () => {
                       </div>
                     )}
 
-                    {/* Review Button when Active or Returned */}
                     {['With Customer', 'Returned'].includes(order.status) && (
                       <button
                         onClick={() => {
@@ -385,7 +391,6 @@ const CustomerOrders = () => {
             )}
 
             <form onSubmit={handlePostReview} className="space-y-4">
-              {/* Star Selector */}
               <div>
                 <label className="block text-xs font-semibold text-gray-700 mb-2">Rating</label>
                 <div className="flex gap-1.5">
@@ -408,7 +413,6 @@ const CustomerOrders = () => {
                 </div>
               </div>
 
-              {/* Comment Textarea */}
               <div>
                 <label className="block text-xs font-semibold text-gray-700 mb-1">
                   Your Review / Experience
@@ -444,16 +448,17 @@ const CustomerOrders = () => {
         </div>
       )}
 
-      {/* Customer Order Cancellation Confirmation Modal */}
+      {/* Customer Order Cancellation Modal */}
       {cancellingOrder && (() => {
         const totalDays = Math.ceil(
           Math.abs(new Date(cancellingOrder.end_date) - new Date(cancellingOrder.start_date)) / (1000 * 60 * 60 * 24)
         ) + 1;
-        const totalRent = parseFloat(cancellingOrder.rent_per_day_snapshot) * cancellingOrder.quantity * totalDays;
+        const actualPaidRent = parseFloat(cancellingOrder.customer_paid_rent_snapshot) || 
+          (parseFloat(cancellingOrder.rent_per_day_snapshot) * cancellingOrder.quantity * totalDays);
         const totalDeposit = parseFloat(cancellingOrder.deposit_per_item_snapshot) * cancellingOrder.quantity;
         const feePerUnit = parseFloat(cancellingOrder.cancellation_fee_snapshot || 0);
         const totalCancellationFee = Math.min(feePerUnit * cancellingOrder.quantity, totalDeposit);
-        const estimatedRefund = totalRent + (totalDeposit - totalCancellationFee);
+        const estimatedRefund = actualPaidRent + (totalDeposit - totalCancellationFee);
 
         return (
           <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -473,7 +478,7 @@ const CustomerOrders = () => {
               <div className="bg-gray-50 p-3.5 rounded-lg border border-gray-200 text-xs space-y-2">
                 <div className="flex justify-between text-gray-600">
                   <span>Paid Rental Cost (100% Refundable):</span>
-                  <span className="font-bold text-gray-900">₹{totalRent.toFixed(2)}</span>
+                  <span className="font-bold text-gray-900">₹{actualPaidRent.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-gray-600">
                   <span>Escrow Deposit:</span>

@@ -1,7 +1,8 @@
+// src/components/ProfileModal.jsx
 import React, { useState, useEffect } from 'react';
 import api from '../api/axiosInstance';
 import { useAuth } from '../context/AuthContext';
-import { User, X, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
+import { User, X, CheckCircle2, AlertCircle, RefreshCw, Award, Tag, Gift } from 'lucide-react';
 
 const ProfileModal = ({ isOpen, onClose }) => {
   const { user, login } = useAuth();
@@ -16,22 +17,33 @@ const ProfileModal = ({ isOpen, onClose }) => {
     bank_ifsc: '',
   });
 
+  const [loyaltyData, setLoyaltyData] = useState({
+    coupons: [],
+    consecutive_good_returns: 0,
+    late_returns_count: 0,
+    milestone_target: 8,
+    contact_support_email: 'support@rms.com',
+  });
+
   const [fetching, setFetching] = useState(false);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState({ success: '', error: '' });
 
-  // Fetch full user record from database whenever modal opens
   useEffect(() => {
-    const fetchFullProfile = async () => {
+    const fetchFullProfileAndCoupons = async () => {
       if (!isOpen) return;
 
       setFetching(true);
       setStatus({ success: '', error: '' });
 
       try {
-        const res = await api.get('/user/myProfile');
-        if (res.data.success && res.data.user) {
-          const u = res.data.user;
+        const [profileRes, couponsRes] = await Promise.all([
+          api.get('/user/myProfile'),
+          user?.role === 'customer' ? api.get('/user/myCoupons') : Promise.resolve({ data: {} }),
+        ]);
+
+        if (profileRes.data.success && profileRes.data.user) {
+          const u = profileRes.data.user;
           setFormData({
             full_name: u.full_name || '',
             phone: u.phone || '',
@@ -42,8 +54,17 @@ const ProfileModal = ({ isOpen, onClose }) => {
             bank_ifsc: u.bank_ifsc || '',
           });
         }
+
+        if (couponsRes.data?.success) {
+          setLoyaltyData({
+            coupons: couponsRes.data.coupons || [],
+            consecutive_good_returns: couponsRes.data.consecutive_good_returns || 0,
+            late_returns_count: couponsRes.data.late_returns_count || 0,
+            milestone_target: couponsRes.data.milestone_target || 8,
+            contact_support_email: couponsRes.data.contact_support_email || 'support@rms.com',
+          });
+        }
       } catch (err) {
-        // Fallback to auth context if API fails
         if (user) {
           setFormData({
             full_name: user.full_name || '',
@@ -60,8 +81,8 @@ const ProfileModal = ({ isOpen, onClose }) => {
       }
     };
 
-    fetchFullProfile();
-  }, [isOpen]);
+    fetchFullProfileAndCoupons();
+  }, [isOpen, user]);
 
   if (!isOpen) return null;
 
@@ -93,9 +114,14 @@ const ProfileModal = ({ isOpen, onClose }) => {
     }
   };
 
+  const progressPercent = Math.min(
+    100,
+    Math.round((loyaltyData.consecutive_good_returns / loyaltyData.milestone_target) * 100)
+  );
+
   return (
     <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white max-w-lg w-full rounded-xl shadow-xl border border-gray-200 p-6 space-y-4">
+      <div className="bg-white max-w-lg w-full rounded-xl shadow-xl border border-gray-200 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center border-b border-gray-100 pb-3">
           <h3 className="text-base font-bold text-gray-900 flex items-center gap-2">
             <User className="w-5 h-5 text-blue-600" />
@@ -105,6 +131,81 @@ const ProfileModal = ({ isOpen, onClose }) => {
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Loyalty Rewards Privilege Section for Customers */}
+        {user?.role === 'customer' && (
+          <div className="bg-gradient-to-r from-blue-900 via-indigo-900 to-blue-800 text-white rounded-xl p-4 space-y-3 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Award className="w-5 h-5 text-amber-400" />
+                <span className="font-bold text-xs">Customer Loyalty Milestone</span>
+              </div>
+              <span
+                className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${
+                  loyaltyData.late_returns_count > 0
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-400/40'
+                    : 'bg-white/10 text-white border-white/20'
+                }`}
+              >
+                {loyaltyData.consecutive_good_returns} / {loyaltyData.milestone_target} Completed
+                {loyaltyData.late_returns_count > 0 && ' (Paused)'}
+              </span>
+            </div>
+
+            {loyaltyData.late_returns_count > 0 ? (
+              <div className="bg-amber-950/50 border border-amber-400/40 rounded-lg p-3 space-y-1.5 text-xs">
+                <div className="flex items-center gap-1.5 font-bold text-amber-300">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>Streak Accrual Paused</span>
+                </div>
+                <p className="text-blue-100 text-[11px] leading-relaxed">
+                  Your streak is paused at <b>{loyaltyData.consecutive_good_returns} / {loyaltyData.milestone_target} returns</b> due to{' '}
+                  <b>{loyaltyData.late_returns_count} overdue return record(s)</b>.
+                </p>
+                <p className="text-blue-100 text-[11px] leading-relaxed">
+                  You can still use any existing coupons below. To request a 1-time amnesty review, contact RMS Support at:{' '}
+                  <a
+                    href={`mailto:${loyaltyData.contact_support_email}`}
+                    className="text-amber-300 font-bold underline hover:text-amber-200"
+                  >
+                    {loyaltyData.contact_support_email}
+                  </a>
+                </p>
+              </div>
+            ) : (
+              <div className="w-full bg-blue-950/60 rounded-full h-2 overflow-hidden border border-white/10">
+                <div
+                  className="bg-gradient-to-r from-amber-400 to-emerald-400 h-2 rounded-full transition-all duration-500"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+            )}
+
+            {loyaltyData.coupons.length > 0 ? (
+              <div className="space-y-1.5 pt-1">
+                <span className="text-[11px] text-amber-300 font-semibold flex items-center gap-1">
+                  <Gift className="w-3.5 h-3.5" /> Available 10% Loyalty Coupons:
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {loyaltyData.coupons.map((c) => (
+                    <span
+                      key={c.id}
+                      className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/30 text-[10px] font-bold text-emerald-200 flex items-center gap-1"
+                    >
+                      <Tag className="w-3 h-3" /> {c.code}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              loyaltyData.late_returns_count === 0 && (
+                <p className="text-[11px] text-blue-200">
+                  {loyaltyData.milestone_target - loyaltyData.consecutive_good_returns} more on-time undamaged return(s) to earn your next 10% coupon card.
+                </p>
+              )
+            )}
+          </div>
+        )}
 
         {status.success && (
           <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800 flex items-center gap-2">

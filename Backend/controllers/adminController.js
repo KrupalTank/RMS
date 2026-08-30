@@ -14,6 +14,24 @@ exports.getDashboardStats = async (req, res) => {
     const pendingKyc = await pool.query("SELECT COUNT(*)::INT FROM users WHERE kyc_status = 'pending'");
     const totalSettlements = await pool.query("SELECT SUM(amount)::NUMERIC(10,2) AS gross FROM payouts");
 
+    const loyaltyFinancials = await pool.query(`
+      SELECT 
+        COALESCE(SUM(platform_commission_snapshot), 0) AS total_platform_commission
+      FROM orders 
+      WHERE status IN ('Lock', 'With Customer', 'Returned', 'Lost')
+    `);
+
+    const totaldiscountused = await pool.query(`
+      SELECT 
+        COALESCE(SUM(discount_amount_snapshot), 0) AS total_discounts_absorbed
+      FROM orders 
+      WHERE status NOT IN ('Pending_Payment')
+    `);
+
+    const activeCouponsCount = await pool.query(
+      "SELECT COUNT(*) AS active_coupons_count FROM coupons WHERE status = 'AVAILABLE'"
+    );
+
     return res.status(200).json({
       success: true,
       stats: {
@@ -21,6 +39,10 @@ exports.getDashboardStats = async (req, res) => {
         activeRentalsCount: activeRentals.rows[0]?.count || 0,
         pendingKycCount: pendingKyc.rows[0]?.count || 0,
         totalDisbursedAmount: totalSettlements.rows[0]?.gross || 0,
+
+        totalPlatformCommission: parseFloat(loyaltyFinancials.rows[0].total_platform_commission),
+        totalDiscountsAbsorbed: parseFloat(totaldiscountused.rows[0].total_discounts_absorbed),
+        activeCouponsCount: parseInt(activeCouponsCount.rows[0].active_coupons_count, 10),
       },
     });
   } catch (error) {
@@ -132,9 +154,24 @@ exports.deleteProductByAdmin = async (req, res) => {
 // GET /api/v1/rms/admin/delinquentUsers
 exports.getDelinquentUsers = async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT id, full_name, email, phone, late_returns_count, is_blocked FROM users WHERE late_returns_count > 0 ORDER BY late_returns_count DESC'
-    );
+    const result = await pool.query(`
+      SELECT 
+        u.id, 
+        u.full_name, 
+        u.email, 
+        u.phone, 
+        u.late_returns_count, 
+        u.consecutive_good_returns, 
+        u.is_blocked,
+        COALESCE(SUM(cph.violations_pardoned), 0)::INT AS total_pardoned_violations,
+        COUNT(cph.id)::INT AS pardon_count,
+        MAX(cph.created_at) AS last_pardoned_at
+      FROM users u
+      LEFT JOIN customer_pardon_history cph ON u.id = cph.customer_id
+      WHERE u.late_returns_count > 0 OR cph.id IS NOT NULL
+      GROUP BY u.id
+      ORDER BY u.late_returns_count DESC, total_pardoned_violations DESC
+    `);
     return res.status(200).json({ success: true, users: result.rows });
   } catch (error) {
     console.error('Get Delinquent Users Error:', error);
@@ -142,8 +179,75 @@ exports.getDelinquentUsers = async (req, res) => {
   }
 };
 
+// POST /api/v1/rms/admin/pardonDelinquentUser
+exports.pardonDelinquentUser = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const adminId = req.user.id;
+    const { userId, reason } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Customer User ID is required.' });
+    }
+
+    await client.query('BEGIN');
+
+    // Fetch current late returns count
+    const userRes = await client.query(
+      'SELECT id, full_name, email, late_returns_count FROM users WHERE id = $1 FOR UPDATE',
+      [userId]
+    );
+
+    if (userRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'User record not found.' });
+    }
+
+    const targetUser = userRes.rows[0];
+    const violationsToPardon = targetUser.late_returns_count;
+
+    if (violationsToPardon <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        success: false,
+        message: 'This user currently has 0 active late return violations.',
+      });
+    }
+
+    // 1. Insert audit record in customer_pardon_history
+    await client.query(
+      `INSERT INTO customer_pardon_history (customer_id, admin_id, violations_pardoned, reason)
+       VALUES ($1, $2, $3, $4)`,
+      [userId, adminId, violationsToPardon, reason || '1-Time Customer Loyalty Pardon granted by Administrator']
+    );
+
+    // 2. Reset active late_returns_count to 0 (unfreezes loyalty streak without losing existing count)
+    const updatedUserRes = await client.query(
+      `UPDATE users 
+       SET late_returns_count = 0 
+       WHERE id = $1 
+       RETURNING id, full_name, email, late_returns_count, consecutive_good_returns`,
+      [userId]
+    );
+
+    await client.query('COMMIT');
+
+    return res.status(200).json({
+      success: true,
+      message: `Pardon granted to ${targetUser.full_name}. Active violations reset to 0.`,
+      user: updatedUserRes.rows[0],
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Pardon Delinquent User Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to process customer pardon.' });
+  } finally {
+    client.release();
+  }
+};
+
+
 // POST /api/v1/rms/admin/toggleBlockUser
-// Inside toggleBlockUser in Backend/controllers/adminController.js
 exports.toggleBlockUser = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -509,7 +613,7 @@ exports.triggerLostOrdersCheck = async (req, res) => {
 // GET /api/v1/rms/admin/transactionLedger
 exports.getTransactionLedger = async (req, res) => {
   try {
-    // 1. Fetch All Incoming Customer Payments (Razorpay collections on Parent Orders)
+    // 1. Fetch All Incoming Customer Payments (Including Loyalty Discounts & Platform Commission Snapshots)
     const incomingQuery = `
       SELECT 
         po.id AS group_id,
@@ -518,9 +622,12 @@ exports.getTransactionLedger = async (req, res) => {
         u.email AS customer_email,
         u.phone AS customer_phone,
         COUNT(o.id)::INT AS total_sub_orders,
-        SUM(o.rent_per_day_snapshot * o.quantity * ((o.end_date - o.start_date) + 1))::NUMERIC(10,2) AS total_rent,
-        SUM(o.deposit_per_item_snapshot * o.quantity)::NUMERIC(10,2) AS total_escrow_deposit,
-        (SUM(o.rent_per_day_snapshot * o.quantity * ((o.end_date - o.start_date) + 1)) + SUM(o.deposit_per_item_snapshot * o.quantity))::NUMERIC(10,2) AS gross_amount
+        COALESCE(SUM(o.gross_rent_snapshot), 0)::NUMERIC(10,2) AS total_gross_rent,
+        COALESCE(SUM(o.discount_amount_snapshot), 0)::NUMERIC(10,2) AS total_loyalty_discount,
+        COALESCE(SUM(o.customer_paid_rent_snapshot), 0)::NUMERIC(10,2) AS total_rent,
+        COALESCE(SUM(o.deposit_per_item_snapshot * o.quantity), 0)::NUMERIC(10,2) AS total_escrow_deposit,
+        COALESCE(SUM(o.platform_commission_snapshot), 0)::NUMERIC(10,2) AS total_platform_commission,
+        (COALESCE(SUM(o.customer_paid_rent_snapshot), 0) + COALESCE(SUM(o.deposit_per_item_snapshot * o.quantity), 0))::NUMERIC(10,2) AS gross_amount
       FROM parent_order po
       JOIN users u ON po.customer_id = u.id
       JOIN orders o ON po.id = o.group_id
@@ -552,9 +659,19 @@ exports.getTransactionLedger = async (req, res) => {
       ORDER BY p.processed_at DESC
     `;
 
-    const [incomingRes, outgoingRes] = await Promise.all([
+    // 3. Aggregate Platform-Wide Revenue & Discount Totals
+    const platformFinancialsQuery = `
+      SELECT 
+        COALESCE(SUM(platform_commission_snapshot), 0)::NUMERIC(10,2) AS total_platform_commission_earned,
+        COALESCE(SUM(discount_amount_snapshot), 0)::NUMERIC(10,2) AS total_loyalty_discounts_absorbed
+      FROM orders
+      WHERE status IN ('Lock', 'With Customer', 'Returned', 'Lost')
+    `;
+
+    const [incomingRes, outgoingRes, financialsRes] = await Promise.all([
       pool.query(incomingQuery),
       pool.query(outgoingQuery),
+      pool.query(platformFinancialsQuery),
     ]);
 
     const totalCollected = incomingRes.rows.reduce((acc, row) => acc + parseFloat(row.gross_amount || 0), 0);
@@ -565,6 +682,9 @@ exports.getTransactionLedger = async (req, res) => {
       .filter((p) => !p.gateway_reference_id)
       .reduce((acc, row) => acc + parseFloat(row.amount || 0), 0);
 
+    const platformCommissionEarned = parseFloat(financialsRes.rows[0]?.total_platform_commission_earned || 0);
+    const loyaltyDiscountsAbsorbed = parseFloat(financialsRes.rows[0]?.total_loyalty_discounts_absorbed || 0);
+
     return res.status(200).json({
       success: true,
       summary: {
@@ -572,6 +692,8 @@ exports.getTransactionLedger = async (req, res) => {
         totalDisbursedSettled: totalDisbursedSettled,
         totalPendingDisbursal: totalPendingDisbursal,
         netEscrowRetained: totalCollected - (totalDisbursedSettled + totalPendingDisbursal),
+        totalPlatformCommissionEarned: platformCommissionEarned,
+        totalLoyaltyDiscountsAbsorbed: loyaltyDiscountsAbsorbed,
       },
       incomingTransactions: incomingRes.rows,
       outgoingPayouts: outgoingRes.rows,
@@ -581,3 +703,4 @@ exports.getTransactionLedger = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to fetch transaction ledger.' });
   }
 };
+

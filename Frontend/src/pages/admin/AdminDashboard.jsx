@@ -1,3 +1,4 @@
+// src/pages/admin/AdminDashboard.jsx
 import React, { useState, useEffect } from 'react';
 import api from '../../api/axiosInstance';
 import { loadRazorpayScript } from '../../utils/loadRazorpay';
@@ -24,10 +25,12 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   Receipt,
+  DollarSign,
+  Tag,
 } from 'lucide-react';
 
 const AdminDashboard = () => {
-  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'orders' | 'ledger' | 'vendors' | 'delinquent' | 'officers' | 'payouts'
+  const [activeTab, setActiveTab] = useState('overview');
 
   // Data states
   const [stats, setStats] = useState(null);
@@ -41,7 +44,7 @@ const AdminDashboard = () => {
 
   // Transaction Ledger State
   const [ledgerData, setLedgerData] = useState({ summary: {}, incomingTransactions: [], outgoingPayouts: [] });
-  const [ledgerFilter, setLedgerFilter] = useState('all'); // 'all' | 'inflow' | 'outflow_settled' | 'outflow_pending'
+  const [ledgerFilter, setLedgerFilter] = useState('all');
 
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState({ success: '', error: '' });
@@ -132,7 +135,6 @@ const AdminDashboard = () => {
     }
   };
 
-  // Initial Load
   useEffect(() => {
     const init = async () => {
       setLoading(true);
@@ -156,32 +158,51 @@ const AdminDashboard = () => {
       if (data.role === 'vendor') fetchVendors();
     });
 
-    socket.on('KYC_SUBMITTED', () => {
-      fetchOverview();
-    });
-
+    socket.on('KYC_SUBMITTED', () => fetchOverview());
     socket.on('PAYOUT_GENERATED', () => {
       fetchOverview();
       fetchPayouts();
       fetchLedger();
     });
-
     socket.on('ORDER_STATUS_CHANGED', () => {
       fetchOverview();
       fetchCategorizedOrders(selectedOrderCategory);
       fetchLedger();
     });
-
     socket.on('ORDER_LOCKED', () => {
       fetchOverview();
       fetchCategorizedOrders(selectedOrderCategory);
       fetchLedger();
     });
 
-    return () => {
-      socket.disconnect();
-    };
+    return () => socket.disconnect();
   }, [selectedOrderCategory]);
+
+  const handlePardonUser = async (user) => {
+    const reason = window.prompt(
+      `Grant a 1-chance loyalty pardon to ${user.full_name}?\n\nThis will reset their ${user.late_returns_count} active violation(s) to 0, log an audit record, and unfreeze their streak (${user.consecutive_good_returns || 0}/8).\n\nOptional note/reason:`,
+      'Admin granted 1-time loyalty amnesty'
+    );
+
+    if (reason === null) return; // Admin clicked Cancel
+
+    try {
+      const res = await api.post('/admin/pardonDelinquentUser', {
+        userId: user.id,
+        reason: reason.trim() || 'Admin granted 1-time loyalty amnesty',
+      });
+
+      if (res.data.success) {
+        setBanner({ success: res.data.message, error: '' });
+        fetchDelinquent();
+      }
+    } catch (err) {
+      setBanner({
+        success: '',
+        error: err.response?.data?.message || 'Failed to pardon customer.',
+      });
+    }
+  };
 
   const handleTriggerLostCheck = async () => {
     setActionLoading(true);
@@ -218,9 +239,7 @@ const AdminDashboard = () => {
   const handleViewVendorProducts = async (vendorId) => {
     try {
       const res = await api.get(`/admin/vendorProducts/${vendorId}`);
-      if (res.data.success) {
-        setSelectedVendorProducts(res.data.products);
-      }
+      if (res.data.success) setSelectedVendorProducts(res.data.products);
     } catch (err) {
       alert('Failed to fetch vendor products.');
     }
@@ -358,7 +377,7 @@ const AdminDashboard = () => {
             <span>Administrator Control Suite</span>
           </h1>
           <p className="text-xs text-gray-500 mt-1">
-            System overview, inventory oversight, financial reconciliation, and risk management.
+            System overview, inventory oversight, financial reconciliation, and platform commission ledger.
           </p>
         </div>
 
@@ -372,7 +391,6 @@ const AdminDashboard = () => {
         </button>
       </div>
 
-      {/* Notifications */}
       {banner.success && (
         <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2 text-xs text-emerald-800">
           <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
@@ -386,7 +404,7 @@ const AdminDashboard = () => {
         </div>
       )}
 
-      {/* Navigation Tabs */}
+      {/* Tabs */}
       <div className="flex border-b border-gray-200 space-x-6 overflow-x-auto text-xs font-bold pb-1">
         {[
           { id: 'overview', label: 'Platform Stats' },
@@ -414,32 +432,63 @@ const AdminDashboard = () => {
       {/* TAB 1: OVERVIEW */}
       {activeTab === 'overview' && stats && (
         <div className="space-y-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* 1. Active Rentals */}
             <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-1">
               <span className="text-xs font-bold text-gray-400 uppercase">Active Rentals</span>
               <p className="text-2xl font-black text-blue-600">{stats.activeRentalsCount}</p>
               <span className="text-[11px] text-gray-500">Currently with customers</span>
             </div>
 
+            {/* 2. Platform Commission Revenue (NEW) */}
+            <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-1">
+              <span className="text-xs font-bold text-gray-400 uppercase flex items-center gap-1">
+                <DollarSign className="w-3.5 h-3.5 text-emerald-600" /> Platform Commission (10%)
+              </span>
+              <p className="text-2xl font-black text-emerald-600">
+                ₹{parseFloat(stats.totalPlatformCommission || 0).toFixed(2)}
+              </p>
+              <span className="text-[11px] text-gray-500">Net platform revenue earned</span>
+            </div>
+
+            {/* 3. Loyalty Discounts Financed (NEW) */}
+            <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-1">
+              <span className="text-xs font-bold text-gray-400 uppercase flex items-center gap-1">
+                <Tag className="w-3.5 h-3.5 text-purple-600" /> Loyalty Discounts Absorbed
+              </span>
+              <p className="text-2xl font-black text-purple-600">
+                ₹{parseFloat(stats.totalDiscountsAbsorbed || 0).toFixed(2)}
+              </p>
+              <span className="text-[11px] text-gray-500">
+                {stats.activeCouponsCount || 0} active coupon card(s) in circulation
+              </span>
+            </div>
+
+            {/* 4. Total Settled Outflows */}
+            <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-1">
+              <span className="text-xs font-bold text-gray-400 uppercase">Total Settled Outflows</span>
+              <p className="text-2xl font-black text-indigo-600">
+                ₹{parseFloat(stats.totalDisbursedAmount || 0).toFixed(2)}
+              </p>
+              <span className="text-[11px] text-gray-500">Disbursed to vendors & customer refunds</span>
+            </div>
+
+            {/* 5. Pending KYC */}
             <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-1">
               <span className="text-xs font-bold text-gray-400 uppercase">Pending KYC Reviews</span>
               <p className="text-2xl font-black text-amber-500">{stats.pendingKycCount}</p>
               <span className="text-[11px] text-gray-500">Awaiting officer verification</span>
             </div>
 
-            <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-1">
-              <span className="text-xs font-bold text-gray-400 uppercase">Total Settled Payouts</span>
-              <p className="text-2xl font-black text-emerald-600">₹{parseFloat(stats.totalDisbursedAmount || 0).toFixed(2)}</p>
-              <span className="text-[11px] text-gray-500">Disbursed to vendors & refunds</span>
-            </div>
-
+            {/* 6. Unpaid Settlements */}
             <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-1">
               <span className="text-xs font-bold text-gray-400 uppercase">Unpaid Settlements</span>
               <p className="text-2xl font-black text-rose-600">{pendingPayouts.length}</p>
-              <span className="text-[11px] text-gray-500">Awaiting disbursal</span>
+              <span className="text-[11px] text-gray-500">Awaiting admin transfer approval</span>
             </div>
           </div>
 
+          {/* User Role Distribution */}
           <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-3">
             <h3 className="text-sm font-bold text-gray-800">User Role Distribution</h3>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
@@ -492,7 +541,7 @@ const AdminDashboard = () => {
                   <th className="p-3">Product</th>
                   <th className="p-3">Customer</th>
                   <th className="p-3">Vendor</th>
-                  <th className="p-3">Dates</th>
+                  <th className="p-3">Financials (Rent / Discount)</th>
                   <th className="p-3">Status</th>
                 </tr>
               </thead>
@@ -504,24 +553,32 @@ const AdminDashboard = () => {
                     </td>
                   </tr>
                 ) : (
-                  categorizedOrders.map((o) => (
-                    <tr key={o.id} className="hover:bg-gray-50">
-                      <td className="p-3 font-bold text-gray-800">#{o.id}</td>
-                      <td className="p-3 font-medium text-gray-900">{o.product_title}</td>
-                      <td className="p-3">
-                        <span className="block font-semibold text-gray-800">{o.customer_name}</span>
-                        <span className="text-[10px] text-gray-400">{o.customer_phone}</span>
-                      </td>
-                      <td className="p-3">
-                        <span className="block font-semibold text-gray-800">{o.vendor_name}</span>
-                        <span className="text-[10px] text-gray-400">{o.vendor_phone}</span>
-                      </td>
-                      <td className="p-3 text-gray-600">
-                        {o.start_date.split('T')[0]} → {o.end_date.split('T')[0]}
-                      </td>
-                      <td className="p-3 font-bold text-rose-700">{o.status}</td>
-                    </tr>
-                  ))
+                  categorizedOrders.map((o) => {
+                    const discount = parseFloat(o.discount_amount_snapshot || 0);
+                    return (
+                      <tr key={o.id} className="hover:bg-gray-50">
+                        <td className="p-3 font-bold text-gray-800">#{o.id}</td>
+                        <td className="p-3 font-medium text-gray-900">{o.product_title}</td>
+                        <td className="p-3">
+                          <span className="block font-semibold text-gray-800">{o.customer_name}</span>
+                          <span className="text-[10px] text-gray-400">{o.customer_phone}</span>
+                        </td>
+                        <td className="p-3">
+                          <span className="block font-semibold text-gray-800">{o.vendor_name}</span>
+                          <span className="text-[10px] text-gray-400">{o.vendor_phone}</span>
+                        </td>
+                        <td className="p-3 text-gray-600">
+                          <span>Gross: ₹{parseFloat(o.gross_rent_snapshot || o.rent_per_day_snapshot || 0).toFixed(2)}</span>
+                          {discount > 0 && (
+                            <span className="block text-[10px] text-emerald-600 font-bold">
+                              Loyalty Discount: -₹{discount.toFixed(2)}
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-3 font-bold text-rose-700">{o.status}</td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -529,10 +586,9 @@ const AdminDashboard = () => {
         </div>
       )}
 
-      {/* TAB 3: TRANSACTION LEDGER & FINANCIAL AUDIT TRAIL */}
+      {/* TAB 3: TRANSACTION LEDGER */}
       {activeTab === 'ledger' && (
         <div className="space-y-6">
-          {/* Metrics Overview Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-1">
               <span className="text-xs font-bold text-gray-400 uppercase flex items-center gap-1">
@@ -564,18 +620,20 @@ const AdminDashboard = () => {
               <span className="text-[11px] text-gray-500">Awaiting admin transfer approval</span>
             </div>
 
+            {/* Card 4 in Transaction Ledger */}
             <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-1">
               <span className="text-xs font-bold text-gray-400 uppercase flex items-center gap-1">
-                <Receipt className="w-3.5 h-3.5 text-purple-600" /> Net Escrow Retained
+                <Receipt className="w-3.5 h-3.5 text-purple-600" /> Platform Retained Balance
               </span>
               <p className="text-2xl font-black text-purple-600">
                 ₹{parseFloat(ledgerData.summary.netEscrowRetained || 0).toFixed(2)}
               </p>
-              <span className="text-[11px] text-gray-500">Platform retained escrow pool</span>
+              <span className="text-[11px] text-gray-500">
+                Commission earnings + Active Escrow 
+              </span>
             </div>
           </div>
 
-          {/* Filter Pills */}
           <div className="flex gap-2 text-xs font-semibold overflow-x-auto pb-1">
             {[
               { id: 'all', label: 'All Transactions' },
@@ -597,7 +655,6 @@ const AdminDashboard = () => {
             ))}
           </div>
 
-          {/* Combined Ledger Table */}
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
             <table className="w-full text-left text-xs">
               <thead className="bg-gray-50 border-b border-gray-200 text-gray-500 uppercase font-bold">
@@ -612,7 +669,6 @@ const AdminDashboard = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {/* 1. INFLOW ROWS */}
                 {(ledgerFilter === 'all' || ledgerFilter === 'inflow') &&
                   ledgerData.incomingTransactions.map((inflow) => (
                     <tr key={`inflow-${inflow.group_id}`} className="hover:bg-emerald-50/40">
@@ -641,7 +697,6 @@ const AdminDashboard = () => {
                     </tr>
                   ))}
 
-                {/* 2. OUTFLOW ROWS */}
                 {ledgerData.outgoingPayouts
                   .filter((p) => {
                     if (ledgerFilter === 'all') return true;
@@ -689,7 +744,7 @@ const AdminDashboard = () => {
         </div>
       )}
 
-      {/* TAB 4: VENDOR DIRECTORY */}
+      {/* TAB 4: VENDORS */}
       {activeTab === 'vendors' && (
         <div className="space-y-4">
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
@@ -771,7 +826,7 @@ const AdminDashboard = () => {
         </div>
       )}
 
-      {/* TAB 5: DELINQUENT RISK */}
+      {/* TAB 5: DELINQUENT */}
       {activeTab === 'delinquent' && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
           <table className="w-full text-left text-xs">
@@ -779,15 +834,16 @@ const AdminDashboard = () => {
               <tr>
                 <th className="p-3">User</th>
                 <th className="p-3">Late Return Violations</th>
-                <th className="p-3">Status</th>
+                <th className="p-3">Loyalty Streak</th>
+                <th className="p-3">Account Status</th>
                 <th className="p-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {delinquentUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="p-8 text-center text-gray-400">
-                    No delinquent accounts recorded.
+                  <td colSpan={5} className="p-8 text-center text-gray-400">
+                    No delinquent or pardoned accounts recorded.
                   </td>
                 </tr>
               ) : (
@@ -796,27 +852,56 @@ const AdminDashboard = () => {
                     <td className="p-3">
                       <span className="font-bold text-gray-900 block">{u.full_name}</span>
                       <span className="text-[10px] text-gray-400">{u.email}</span>
+                      <span className="text-[10px] text-gray-400 block">{u.phone}</span>
                     </td>
                     <td className="p-3">
-                      <span className="px-2.5 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-full font-extrabold">
-                        {u.late_returns_count} violation(s)
+                      <span
+                        className={`px-2.5 py-1 rounded-full font-extrabold text-xs inline-block ${
+                          u.late_returns_count > 0
+                            ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                            : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                        }`}
+                      >
+                        {u.late_returns_count} active violation(s)
+                      </span>
+                      {u.total_pardoned_violations > 0 && (
+                        <span className="block text-[10px] text-gray-500 mt-1">
+                          ({u.total_pardoned_violations} pardoned across {u.pardon_count} instance(s))
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-3">
+                      <span className="font-bold text-indigo-700 text-xs">
+                        {u.consecutive_good_returns || 0} / 8
+                      </span>
+                      <span className="block text-[10px] text-gray-400">
+                        {u.late_returns_count > 0 ? 'Status: Paused ⏸️' : 'Status: Active ▶️'}
                       </span>
                     </td>
                     <td className="p-3 font-semibold">
                       {u.is_blocked ? (
-                        <span className="text-red-600">Access Blocked</span>
+                        <span className="text-red-600 font-bold">Access Blocked</span>
                       ) : (
-                        <span className="text-emerald-600">Active</span>
+                        <span className="text-emerald-600 font-bold">Active</span>
                       )}
                     </td>
-                    <td className="p-3 text-right">
+                    <td className="p-3 text-right space-x-2 whitespace-nowrap">
+                      {u.late_returns_count > 0 && (
+                        <button
+                          onClick={() => handlePardonUser(u)}
+                          className="px-3 py-1.5 rounded font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-xs transition"
+                          title="Reset active violations to 0 & resume paused streak"
+                        >
+                          Grant 1-Chance Pardon
+                        </button>
+                      )}
                       <button
                         onClick={() => handleToggleBlock(u.id, u.is_blocked)}
-                        className={`px-3 py-1.5 rounded font-bold text-white text-xs ${
-                          u.is_blocked ? 'bg-emerald-600' : 'bg-red-600'
+                        className={`px-3 py-1.5 rounded font-bold text-white text-xs transition ${
+                          u.is_blocked ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-600 hover:bg-red-700'
                         }`}
                       >
-                        {u.is_blocked ? 'Unfreeze User' : 'Freeze / Block User'}
+                        {u.is_blocked ? 'Unblock' : 'Block'}
                       </button>
                     </td>
                   </tr>
@@ -827,7 +912,8 @@ const AdminDashboard = () => {
         </div>
       )}
 
-      {/* TAB 6: KYC OFFICERS */}
+      
+      {/* TAB 6: OFFICERS */}
       {activeTab === 'officers' && (
         <div className="space-y-4">
           <div className="flex justify-end">
@@ -872,7 +958,7 @@ const AdminDashboard = () => {
         </div>
       )}
 
-      {/* TAB 7: PENDING PAYOUTS */}
+      {/* TAB 7: PAYOUTS */}
       {activeTab === 'payouts' && (
         <div className="space-y-4">
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">

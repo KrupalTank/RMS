@@ -387,7 +387,6 @@ exports.getVendorOrderById = async (req, res) => {
 };
 
 // POST /api/v1/rms/vendor/changeOrderStatus
-// POST /api/v1/rms/vendor/changeOrderStatus
 exports.changeOrderStatus = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -429,13 +428,14 @@ exports.changeOrderStatus = async (req, res) => {
         [order_id]
       );
 
+      // Inside changeOrderStatus (when status === 'Cancelled') in vendorController.js
+
       if (detailsRes.rows.length > 0) {
         const d = detailsRes.rows[0];
-        const start = new Date(d.start_date);
-        const end = new Date(d.end_date);
-        const totalDays = Math.ceil(Math.abs(end - start) / (1000 * 60 * 60 * 24)) + 1;
 
-        const totalRent = parseFloat(d.rent_per_day_snapshot) * d.quantity * totalDays;
+        const grossRent = parseFloat(d.gross_rent_snapshot || 0);
+        const discountAmount = parseFloat(d.discount_amount_snapshot || 0);
+        const actualPaidRent = parseFloat(d.customer_paid_rent_snapshot || (grossRent - discountAmount));
         const totalDeposit = parseFloat(d.deposit_per_item_snapshot) * d.quantity;
 
         sendCustomerCancellationEmail({
@@ -444,10 +444,12 @@ exports.changeOrderStatus = async (req, res) => {
           productTitle: d.product_title,
           orderId: d.id,
           cancelledBy: 'vendor',
-          totalRent,
+          grossRent,
+          discountAmount,
+          actualPaidRent,
           totalDeposit,
           cancellationFeeDeducted: 0,
-          refundAmount: totalRent + totalDeposit,
+          refundAmount: actualPaidRent + totalDeposit,
         });
       }
 

@@ -153,6 +153,7 @@ exports.cancelOrder = async (req, res) => {
 
 
     // Fetch order, product, customer & vendor details for notification
+
     const emailDetailsRes = await pool.query(
       `SELECT o.*, p.title AS product_title,
               c.full_name AS customer_name, c.email AS customer_email,
@@ -167,15 +168,14 @@ exports.cancelOrder = async (req, res) => {
 
     if (emailDetailsRes.rows.length > 0) {
       const d = emailDetailsRes.rows[0];
-      const start = new Date(d.start_date);
-      const end = new Date(d.end_date);
-      const totalDays = Math.ceil(Math.abs(end - start) / (1000 * 60 * 60 * 24)) + 1;
 
-      const totalRent = parseFloat(d.rent_per_day_snapshot) * d.quantity * totalDays;
+      const grossRent = parseFloat(d.gross_rent_snapshot || 0);
+      const discountAmount = parseFloat(d.discount_amount_snapshot || 0);
+      const actualPaidRent = parseFloat(d.customer_paid_rent_snapshot || (grossRent - discountAmount));
       const totalDeposit = parseFloat(d.deposit_per_item_snapshot) * d.quantity;
       const feePerUnit = parseFloat(d.cancellation_fee_snapshot || 0);
       const cancellationFeeDeducted = Math.min(feePerUnit * d.quantity, totalDeposit);
-      const refundAmount = totalRent + (totalDeposit - cancellationFeeDeducted);
+      const refundAmount = actualPaidRent + (totalDeposit - cancellationFeeDeducted);
 
       // 1. Email Customer
       sendCustomerCancellationEmail({
@@ -184,7 +184,9 @@ exports.cancelOrder = async (req, res) => {
         productTitle: d.product_title,
         orderId: d.id,
         cancelledBy: 'customer',
-        totalRent,
+        grossRent,
+        discountAmount,
+        actualPaidRent,
         totalDeposit,
         cancellationFeeDeducted,
         refundAmount,
