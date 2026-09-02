@@ -21,11 +21,18 @@ router.post('/addOfficer', validateRequired(['full_name', 'email', 'password', '
 router.delete('/removeOfficer/:id', adminController.removeKycOfficer);
 router.get('/pendingPayouts', adminController.getPendingPayouts);
 router.post('/recordPayoutReference', validateRequired(['payout_id', 'gateway_reference_id']), adminController.recordPayoutReference);
-router.post('/createPayoutOrder', validateRequired(['payout_id']), adminController.createPayoutOrder);
+// router.post('/createPayoutOrder', validateRequired(['payout_id']), adminController.createPayoutOrder);
 
 router.post('/triggerLostOrdersCheck', adminController.triggerLostOrdersCheck);
 router.get('/transactionLedger', adminController.getTransactionLedger);
 
 router.post('/pardonDelinquentUser', validateRequired(['userId']), adminController.pardonDelinquentUser);
+
+// Inside routes/adminRoutes.js
+router.post(
+  '/batchBankingPayouts',
+  validateRequired(['payout_ids']),
+  adminController.batchBankingPayouts
+);
 
 module.exports = router;

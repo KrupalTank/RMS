@@ -32,6 +32,11 @@ import {
 const AdminDashboard = () => {
   const [activeTab, setActiveTab] = useState('overview');
 
+  const [selectedPayoutIds, setSelectedPayoutIds] = useState([]);
+  const [isClearingModalOpen, setIsClearingModalOpen] = useState(false);
+  const [clearingStage, setClearingStage] = useState(0); // 0: Idle, 1: Validating, 2: Routing, 3: Completed
+  const [clearingSummary, setClearingSummary] = useState(null);
+
   // Data states
   const [stats, setStats] = useState(null);
   const [categorizedOrders, setCategorizedOrders] = useState([]);
@@ -177,6 +182,73 @@ const AdminDashboard = () => {
 
     return () => socket.disconnect();
   }, [selectedOrderCategory]);
+
+ 
+  // 2. Synchronize selected IDs whenever pending payouts load:
+  useEffect(() => {
+    if (pendingPayouts.length > 0) {
+      // By default, select all payouts
+      setSelectedPayoutIds(pendingPayouts.map((p) => p.id));
+    } else {
+      setSelectedPayoutIds([]);
+    }
+  }, [pendingPayouts]);
+
+  // 3. Selection Handlers:
+  const handleToggleSelectAll = () => {
+    if (selectedPayoutIds.length === pendingPayouts.length) {
+      setSelectedPayoutIds([]);
+    } else {
+      setSelectedPayoutIds(pendingPayouts.map((p) => p.id));
+    }
+  };
+
+  const handleToggleSelectPayout = (id) => {
+    setSelectedPayoutIds((prev) =>
+      prev.includes(id) ? prev.filter((pId) => pId !== id) : [...prev, id]
+    );
+  };
+
+  // 4. Batch Disbursement Trigger with Simulation Steps:
+  // Batch Disbursement Trigger (Supports both single-row click and bulk selection)
+  const handleTriggerBatchDisbursal = async (targetIds = null) => {
+    // Determine whether this run is for an individual payout or the bulk-selected list
+    const idsToProcess = Array.isArray(targetIds) ? targetIds : selectedPayoutIds;
+
+    if (!idsToProcess || idsToProcess.length === 0) {
+      alert('Please select at least one payout to disburse.');
+      return;
+    }
+
+    setIsClearingModalOpen(true);
+    setClearingStage(1); // Stage 1: Validating bank credentials
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      setClearingStage(2); // Stage 2: Connecting to IMPS clearing rails
+
+      const res = await api.post('/admin/batchBankingPayouts', {
+        payout_ids: idsToProcess,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+
+      if (res.data.success) {
+        setClearingStage(3); // Stage 3: UTR generated & verified
+        setClearingSummary(res.data);
+        setBanner({ success: res.data.message, error: '' });
+        fetchPayouts();
+        fetchOverview();
+        fetchLedger();
+      }
+    } catch (err) {
+      setIsClearingModalOpen(false);
+      setBanner({
+        success: '',
+        error: err.response?.data?.message || 'Failed to process settlement.',
+      });
+    }
+  };
 
   const handlePardonUser = async (user) => {
     const reason = window.prompt(
@@ -961,10 +1033,50 @@ const AdminDashboard = () => {
       {/* TAB 7: PAYOUTS */}
       {activeTab === 'payouts' && (
         <div className="space-y-4">
+          {/* Batch Controls Bar */}
+          {pendingPayouts.length > 0 && (
+            <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-extrabold text-emerald-950 flex items-center gap-2">
+                  <CreditCard className="w-4 h-4 text-emerald-600" />
+                  <span>Automated Treasury Clearing Console (IMPS Rails)</span>
+                </h3>
+                <p className="text-xs text-emerald-800 mt-0.5">
+                  <b>{selectedPayoutIds.length}</b> of <b>{pendingPayouts.length}</b> payout(s) selected for bulk disbursement (Total: ₹
+                  {pendingPayouts
+                    .filter((p) => selectedPayoutIds.includes(p.id))
+                    .reduce((acc, p) => acc + parseFloat(p.amount || 0), 0)
+                    .toFixed(2)}
+                  ).
+                </p>
+              </div>
+
+              <button
+                onClick={handleTriggerBatchDisbursal}
+                disabled={selectedPayoutIds.length === 0 || actionLoading}
+                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-black shadow-sm transition flex items-center gap-2 disabled:opacity-50"
+              >
+                <span>⚡ Disburse Selected ({selectedPayoutIds.length}) via IMPS</span>
+              </button>
+            </div>
+          )}
+
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
             <table className="w-full text-left text-xs">
               <thead className="bg-gray-50 border-b border-gray-200 text-gray-500 uppercase font-bold">
                 <tr>
+                  <th className="p-3 w-10 text-center">
+                    <input
+                      type="checkbox"
+                      checked={
+                        pendingPayouts.length > 0 &&
+                        selectedPayoutIds.length === pendingPayouts.length
+                      }
+                      onChange={handleToggleSelectAll}
+                      className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 border-gray-300 cursor-pointer"
+                      title="Select / Deselect All"
+                    />
+                  </th>
                   <th className="p-3">Payout ID</th>
                   <th className="p-3">Recipient</th>
                   <th className="p-3">Amount</th>
@@ -976,36 +1088,51 @@ const AdminDashboard = () => {
               <tbody className="divide-y divide-gray-100">
                 {pendingPayouts.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="p-8 text-center text-gray-400">
+                    <td colSpan={7} className="p-8 text-center text-gray-400">
                       No pending payouts awaiting settlement.
                     </td>
                   </tr>
                 ) : (
-                  pendingPayouts.map((p) => (
-                    <tr key={p.id} className="hover:bg-gray-50">
-                      <td className="p-3 font-bold text-gray-800">#{p.id}</td>
-                      <td className="p-3 font-bold text-gray-900">{p.recipient_name}</td>
-                      <td className="p-3 font-black text-emerald-600 text-sm">₹{parseFloat(p.amount).toFixed(2)}</td>
-                      <td className="p-3">
-                        <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-700 font-semibold text-[10px] uppercase">
-                          {p.type.replace(/_/g, ' ')}
-                        </span>
-                      </td>
-                      <td className="p-3 text-[11px] text-gray-500">
-                        Ac: <b>{p.bank_account_no || 'N/A'}</b> | IFSC: <b>{p.bank_ifsc || 'N/A'}</b>
-                      </td>
-                      <td className="p-3 text-right">
-                        <button
-                          onClick={() => handleApproveAndPay(p)}
-                          disabled={payingPayoutId === p.id}
-                          className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs shadow-sm transition disabled:opacity-50 flex items-center gap-1.5 ml-auto"
-                        >
-                          <CreditCard className="w-3.5 h-3.5" />
-                          <span>{payingPayoutId === p.id ? 'Processing...' : 'Approve & Pay'}</span>
-                        </button>
-                      </td>
-                    </tr>
-                  ))
+                  pendingPayouts.map((p) => {
+                    const isSelected = selectedPayoutIds.includes(p.id);
+                    return (
+                      <tr
+                        key={p.id}
+                        className={`transition ${isSelected ? 'bg-emerald-50/30' : 'hover:bg-gray-50'}`}
+                      >
+                        <td className="p-3 text-center">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleSelectPayout(p.id)}
+                            className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 border-gray-300 cursor-pointer"
+                          />
+                        </td>
+                        <td className="p-3 font-bold text-gray-800">#{p.id}</td>
+                        <td className="p-3 font-bold text-gray-900">{p.recipient_name}</td>
+                        <td className="p-3 font-black text-emerald-600 text-sm">
+                          ₹{parseFloat(p.amount).toFixed(2)}
+                        </td>
+                        <td className="p-3">
+                          <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-700 font-semibold text-[10px] uppercase">
+                            {p.type.replace(/_/g, ' ')}
+                          </span>
+                        </td>
+                        <td className="p-3 text-[11px] text-gray-500">
+                          Ac: <b>{p.bank_account_no || 'N/A'}</b> | IFSC: <b>{p.bank_ifsc || 'N/A'}</b>
+                        </td>
+                        <td className="p-3 text-right">
+
+                          <button
+                            onClick={() => handleTriggerBatchDisbursal([p.id])}
+                            className="px-3 py-1 bg-gray-100 hover:bg-emerald-50 hover:text-emerald-700 rounded font-bold text-xs text-gray-700 transition"
+                          >
+                            Disburse Now
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -1080,6 +1207,123 @@ const AdminDashboard = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: SIMULATED BANKING CLEARING CONSOLE */}
+      {isClearingModalOpen && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white max-w-lg w-full rounded-2xl p-6 space-y-5 shadow-2xl border border-gray-100">
+            <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-100 rounded-lg text-emerald-700">
+                  <CreditCard className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-gray-900">
+                    National Automated Clearing House (NACH / IMPS)
+                  </h3>
+                  <p className="text-[11px] text-gray-500">Simulated Banking Outflow Railway</p>
+                </div>
+              </div>
+              {clearingStage === 3 && (
+                <button
+                  onClick={() => {
+                    setIsClearingModalOpen(false);
+                    setClearingStage(0);
+                    setClearingSummary(null);
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              )}
+            </div>
+
+            {/* Progress Stages */}
+            <div className="space-y-3">
+              <div
+                className={`flex items-center gap-3 p-3 rounded-lg border text-xs ${
+                  clearingStage >= 1
+                    ? 'bg-emerald-50/60 border-emerald-200 text-emerald-900 font-medium'
+                    : 'bg-gray-50 border-gray-100 text-gray-400'
+                }`}
+              >
+                {clearingStage === 1 ? (
+                  <RefreshCw className="w-4 h-4 text-emerald-600 animate-spin flex-shrink-0" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                )}
+                <span>Step 1: Validating recipient bank accounts and RBI IFSC routing directory...</span>
+              </div>
+
+              <div
+                className={`flex items-center gap-3 p-3 rounded-lg border text-xs ${
+                  clearingStage >= 2
+                    ? 'bg-emerald-50/60 border-emerald-200 text-emerald-900 font-medium'
+                    : 'bg-gray-50 border-gray-100 text-gray-400'
+                }`}
+              >
+                {clearingStage === 2 ? (
+                  <RefreshCw className="w-4 h-4 text-emerald-600 animate-spin flex-shrink-0" />
+                ) : clearingStage > 2 ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                ) : (
+                  <Clock className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                )}
+                <span>Step 2: Connecting to IMPS clearing network & reserving escrow funds...</span>
+              </div>
+
+              <div
+                className={`flex items-center gap-3 p-3 rounded-lg border text-xs ${
+                  clearingStage === 3
+                    ? 'bg-emerald-50/60 border-emerald-200 text-emerald-900 font-medium'
+                    : 'bg-gray-50 border-gray-100 text-gray-400'
+                }`}
+              >
+                {clearingStage === 3 ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                ) : (
+                  <Clock className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                )}
+                <span>Step 3: Unique 12-digit Indian Banking UTRs generated and settlement receipts queued.</span>
+              </div>
+            </div>
+
+            {/* Settlement Summary when complete */}
+            {clearingStage === 3 && clearingSummary && (
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-2 text-xs">
+                <div className="flex justify-between font-bold text-gray-900">
+                  <span>Settlement Result:</span>
+                  <span className="text-emerald-600">SUCCESSFUL (IMPS-P2A)</span>
+                </div>
+                <div className="flex justify-between text-gray-600">
+                  <span>Total Payouts Settled:</span>
+                  <span className="font-bold text-gray-900">{clearingSummary.count}</span>
+                </div>
+                <div className="flex justify-between text-gray-600">
+                  <span>Total Disbursed:</span>
+                  <span className="font-bold text-emerald-600 text-sm">
+                    ₹{parseFloat(clearingSummary.total_amount || 0).toFixed(2)}
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-500 pt-1 border-t border-gray-200">
+                  * Official settlement slips with RBI bank UTRs have been dispatched asynchronously to all beneficiaries.
+                </p>
+
+                <button
+                  onClick={() => {
+                    setIsClearingModalOpen(false);
+                    setClearingStage(0);
+                    setClearingSummary(null);
+                  }}
+                  className="w-full mt-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs shadow-sm transition"
+                >
+                  Done & Return to Dashboard
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

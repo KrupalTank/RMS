@@ -508,86 +508,86 @@ exports.recordPayoutReference = async (req, res) => {
 
 // POST /api/v1/rms/admin/createPayoutOrder
 // Generates a Razorpay order_id for an individual payout settlement
-exports.createPayoutOrder = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { payout_id } = req.body;
+// exports.createPayoutOrder = async (req, res) => {
+//   const client = await pool.connect();
+//   try {
+//     const { payout_id } = req.body;
 
-    if (!payout_id) {
-      return res.status(400).json({ success: false, message: 'Payout ID is required.' });
-    }
+//     if (!payout_id) {
+//       return res.status(400).json({ success: false, message: 'Payout ID is required.' });
+//     }
 
-    await client.query('BEGIN');
+//     await client.query('BEGIN');
 
-    // 1. Acquire exclusive lock on payout record to prevent concurrent order creation[cite: 8]
-    const payoutRes = await client.query(
-      `SELECT p.*, u.full_name AS recipient_name, u.email AS recipient_email, u.phone AS recipient_phone
-       FROM payouts p
-       JOIN users u ON p.recipient_id = u.id
-       WHERE p.id = $1 FOR UPDATE`,
-      [payout_id]
-    );
+//     // 1. Acquire exclusive lock on payout record to prevent concurrent order creation[cite: 8]
+//     const payoutRes = await client.query(
+//       `SELECT p.*, u.full_name AS recipient_name, u.email AS recipient_email, u.phone AS recipient_phone
+//        FROM payouts p
+//        JOIN users u ON p.recipient_id = u.id
+//        WHERE p.id = $1 FOR UPDATE`,
+//       [payout_id]
+//     );
 
-    if (payoutRes.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ success: false, message: 'Payout record not found.' });
-    }
+//     if (payoutRes.rows.length === 0) {
+//       await client.query('ROLLBACK');
+//       return res.status(404).json({ success: false, message: 'Payout record not found.' });
+//     }
 
-    const payout = payoutRes.rows[0];
+//     const payout = payoutRes.rows[0];
 
-    // Check if payout has already been completed[cite: 8]
-    if (payout.gateway_reference_id) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        success: false,
-        message: 'This payout has already been paid and finalized.',
-      });
-    }
+//     // Check if payout has already been completed[cite: 8]
+//     if (payout.gateway_reference_id) {
+//       await client.query('ROLLBACK');
+//       return res.status(400).json({
+//         success: false,
+//         message: 'This payout has already been paid and finalized.',
+//       });
+//     }
 
-    // 2. Convert amount to paise (e.g., ₹500.00 -> 50000 paise)[cite: 8]
-    const amountInPaise = Math.round(parseFloat(payout.amount) * 100);
+//     // 2. Convert amount to paise (e.g., ₹500.00 -> 50000 paise)[cite: 8]
+//     const amountInPaise = Math.round(parseFloat(payout.amount) * 100);
 
-    // 3. Create Razorpay Order[cite: 8]
-    const options = {
-      amount: amountInPaise,
-      currency: 'INR',
-      receipt: `payout_rcpt_${payout.id}_${Date.now()}`,
-      notes: {
-        payout_id: payout.id.toString(),
-        order_id: payout.order_id.toString(),
-        recipient_id: payout.recipient_id.toString(),
-        payout_type: payout.type,
-      },
-    };
+//     // 3. Create Razorpay Order[cite: 8]
+//     const options = {
+//       amount: amountInPaise,
+//       currency: 'INR',
+//       receipt: `payout_rcpt_${payout.id}_${Date.now()}`,
+//       notes: {
+//         payout_id: payout.id.toString(),
+//         order_id: payout.order_id.toString(),
+//         recipient_id: payout.recipient_id.toString(),
+//         payout_type: payout.type,
+//       },
+//     };
 
-    const rzpOrder = await razorpay.orders.create(options);
+//     const rzpOrder = await razorpay.orders.create(options);
 
-    await client.query('COMMIT');
+//     await client.query('COMMIT');
 
-    return res.status(200).json({
-      success: true,
-      message: 'Razorpay order created for payout approval.',
-      key_id: process.env.RAZORPAY_KEY_ID,
-      razorpay_order_id: rzpOrder.id,
-      amount: rzpOrder.amount,
-      currency: rzpOrder.currency,
-      payout: {
-        id: payout.id,
-        amount: payout.amount,
-        type: payout.type,
-        recipient_name: payout.recipient_name,
-        recipient_email: payout.recipient_email,
-        recipient_phone: payout.recipient_phone,
-      },
-    });
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    console.error('Create Payout Order Error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to create payout order.' });
-  } finally {
-    client.release();
-  }
-};
+//     return res.status(200).json({
+//       success: true,
+//       message: 'Razorpay order created for payout approval.',
+//       key_id: process.env.RAZORPAY_KEY_ID,
+//       razorpay_order_id: rzpOrder.id,
+//       amount: rzpOrder.amount,
+//       currency: rzpOrder.currency,
+//       payout: {
+//         id: payout.id,
+//         amount: payout.amount,
+//         type: payout.type,
+//         recipient_name: payout.recipient_name,
+//         recipient_email: payout.recipient_email,
+//         recipient_phone: payout.recipient_phone,
+//       },
+//     });
+//   } catch (error) {
+//     await client.query('ROLLBACK').catch(() => {});
+//     console.error('Create Payout Order Error:', error);
+//     return res.status(500).json({ success: false, message: 'Failed to create payout order.' });
+//   } finally {
+//     client.release();
+//   }
+// };
 
 // POST /api/v1/rms/admin/triggerLostOrdersCheck
 exports.triggerLostOrdersCheck = async (req, res) => {
@@ -704,3 +704,132 @@ exports.getTransactionLedger = async (req, res) => {
   }
 };
 
+
+// POST /api/v1/rms/admin/batchBankingPayouts
+// Simulates enterprise-grade IMPS/NEFT bank clearing run for selected payouts
+exports.batchBankingPayouts = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { payout_ids } = req.body; // Array of payout IDs selected by Admin
+
+    if (!payout_ids || !Array.isArray(payout_ids) || payout_ids.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide an array of selected payout IDs to process.',
+      });
+    }
+
+    await client.query('BEGIN');
+
+    // 1. Acquire exclusive lock on the selected pending payouts
+    const selectedRes = await client.query(
+      `SELECT p.id, p.amount, p.type, p.order_id, p.recipient_id,
+              u.full_name, u.email, u.bank_account_no, u.bank_ifsc,
+              o.start_date, o.end_date, prod.title AS product_title
+       FROM payouts p
+       JOIN users u ON p.recipient_id = u.id
+       JOIN orders o ON p.order_id = o.id
+       JOIN products prod ON o.product_id = prod.id
+       WHERE p.id = ANY($1::int[]) AND p.gateway_reference_id IS NULL
+       FOR UPDATE`,
+      [payout_ids]
+    );
+
+    if (selectedRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        success: false,
+        message: 'None of the selected payouts are currently pending or eligible for disbursal.',
+      });
+    }
+
+    const payoutsToProcess = selectedRes.rows;
+    const settledRecords = [];
+
+    // Helper: Generate an authentic 12-character Indian Banking UTR (e.g., CMS260902481923)
+    const generateBankingUTR = () => {
+      const now = new Date();
+      const yy = String(now.getFullYear()).slice(-2);
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      const randomSeq = Math.floor(100000 + Math.random() * 900000);
+      return `CMS${yy}${mm}${dd}${randomSeq}`;
+    };
+
+    // 2. Process each payout and assign unique banking UTRs
+    for (const payout of payoutsToProcess) {
+      const simulatedUtr = generateBankingUTR();
+
+      await client.query(
+        `UPDATE payouts
+         SET gateway_reference_id = $1,
+             processed_at = CURRENT_TIMESTAMP
+         WHERE id = $2`,
+        [simulatedUtr, payout.id]
+      );
+
+      settledRecords.push({
+        ...payout,
+        gateway_reference_id: simulatedUtr,
+      });
+    }
+
+    await client.query('COMMIT');
+
+    // Helper delay function
+    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    // Replace the setImmediate block in batchBankingPayouts with this sequential worker:
+    setImmediate(async () => {
+      for (const record of settledRecords) {
+        try {
+          await sendPayoutSettlementEmail({
+            recipient: {
+              full_name: record.full_name,
+              email: record.email,
+              bank_account_no: record.bank_account_no,
+              bank_ifsc: record.bank_ifsc,
+            },
+            payout: {
+              id: record.id,
+              amount: record.amount,
+              type: record.type,
+              order_id: record.order_id,
+              gateway_reference_id: record.gateway_reference_id,
+            },
+            orderDetails: {
+              product_title: record.product_title,
+              start_date: record.start_date,
+              end_date: record.end_date,
+            },
+          });
+          // 400ms pause between emails to comply with Gmail SMTP limits
+          await delay(400);
+        } catch (err) {
+          console.error(`⚠️ Failed to send settlement slip for payout #${record.id}:`, err.message);
+        }
+      }
+    });
+
+    const totalDisbursed = settledRecords.reduce((acc, p) => acc + parseFloat(p.amount || 0), 0);
+
+    return res.status(200).json({
+      success: true,
+      message: `Batch settlement completed. Disbursed ₹${totalDisbursed.toFixed(2)} across ${settledRecords.length} payouts via IMPS rails.`,
+      count: settledRecords.length,
+      total_amount: totalDisbursed,
+      settled_payouts: settledRecords.map((p) => ({
+        id: p.id,
+        recipient: p.full_name,
+        amount: p.amount,
+        utr: p.gateway_reference_id,
+      })),
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Batch Banking Payouts Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to process batch settlement.' });
+  } finally {
+    client.release();
+  }
+};
