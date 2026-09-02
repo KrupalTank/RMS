@@ -181,3 +181,23 @@ npm run dev
 
 🛡️ License
 Distributed under the MIT License. Developed for enterprise equipment rental management.
+
+
+
+### 🏷️ Version 3.1.0 — Automated Treasury Disbursement & Mock Banking Rails (IMPS/NEFT)
+* **Automated Batch Settlement Workflow:**
+  * Replaced manual one-by-one checkout payment modals with an enterprise-grade **Batch Disbursement Console** in the Administrator Suite.
+  * Introduced full selection control: Master "Select All" toggle (active by default) with granular row-level checkboxes to deselect individual payouts for review.
+  * Added single-payout direct settlement (`Disburse Now`) bypassing stale React state closures via direct parameter injection.
+* **Simulated Indian Banking Clearing Rails:**
+  * Created the `POST /api/v1/rms/admin/batchBankingPayouts` endpoint supporting atomic row locking (`FOR UPDATE`) across selected payout records.
+  * Integrated an interactive **Mock Banking Clearing Console** simulating NACH/IMPS clearing stages:
+    1. Recipient bank account & RBI IFSC directory routing validation.
+    2. IMPS network handshake and escrow fund reservation.
+    3. Production-standard 12-character Indian Banking UTR generation (format: `CMS` + `YYMMDD` + 6 random digits, e.g., `CMS260902481923`).
+* **Asynchronous SMTP Queue & Rate-Limiting:**
+  * Transitioned settlement receipt PDF generation and email dispatch to an asynchronous background worker using `setImmediate`.
+  * Implemented sequential throttling (~400ms delay between dispatches) to prevent SMTP socket saturation and resolve Gmail `421-4.3.0` temporary rate-limiting on bulk runs.
+* **Database & Ledger Consistency:**
+  * Updated `payouts` table schema updates to record unique gateway reference UTRs, payment mode, and settlement timestamps atomically.
+  * Synchronized real-time balance metrics across Platform Retained Balances and Settled Outflows in the Transaction Ledger.
