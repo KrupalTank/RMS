@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
+// src/pages/customer/ProductDetail.jsx
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../../api/axiosInstance';
 import { useAuth } from '../../context/AuthContext';
 import { parseProductImages } from '../../utils/imageHelper';
+import ProductCard from '../../components/ProductCard';
 import {
   getEffectiveDeposit,
   getEffectiveLateFee,
@@ -21,15 +23,20 @@ import {
   AlertCircle,
   CheckCircle2,
   ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  Sparkles,
 } from 'lucide-react';
 
 const ProductDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const similarScrollRef = useRef(null);
 
   const [product, setProduct] = useState(null);
   const [reviews, setReviews] = useState([]);
+  const [similarProducts, setSimilarProducts] = useState([]);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
 
   // Form State
@@ -41,15 +48,26 @@ const ProductDetail = () => {
   const [actionLoading, setActionLoading] = useState(false);
   const [status, setStatus] = useState({ success: '', error: '' });
 
-  // Fetch product data
+  // Fetch product data & similar recommendations
   useEffect(() => {
-    const fetchProduct = async () => {
+    const fetchProductAndRecommendations = async () => {
       setLoading(true);
+      setActiveImageIndex(0);
+      setStatus({ success: '', error: '' });
+
       try {
-        const res = await api.get(`/user/getProduct/${id}`);
-        if (res.data.success) {
-          setProduct(res.data.product);
-          setReviews(res.data.reviews || []);
+        const [prodRes, similarRes] = await Promise.all([
+          api.get(`/user/getProduct/${id}`),
+          api.get(`/user/recommendations/similar/${id}?limit=6`),
+        ]);
+
+        if (prodRes.data.success) {
+          setProduct(prodRes.data.product);
+          setReviews(prodRes.data.reviews || []);
+        }
+
+        if (similarRes.data.success) {
+          setSimilarProducts(similarRes.data.products || []);
         }
       } catch (err) {
         setStatus({
@@ -60,8 +78,16 @@ const ProductDetail = () => {
         setLoading(false);
       }
     };
-    fetchProduct();
+
+    fetchProductAndRecommendations();
   }, [id]);
+
+  const handleScrollSimilar = (direction) => {
+    if (similarScrollRef.current) {
+      const scrollAmount = direction === 'left' ? -340 : 340;
+      similarScrollRef.current.scrollBy({ left: scrollAmount, behavior: 'smooth' });
+    }
+  };
 
   if (loading) {
     return (
@@ -318,7 +344,6 @@ const ProductDetail = () => {
               </div>
             </div>
 
-            {/* Inside the live quotation box in ProductDetail.jsx */}
             <div className="flex justify-between text-gray-600 text-xs">
               <span>Cancellation Policy:</span>
               <span className="font-semibold text-gray-800">
@@ -428,7 +453,6 @@ const ProductDetail = () => {
                       <span>Total Rental Fee ({quantity} item × {totalDays}d):</span>
                       <span className="font-bold text-gray-900">₹{totalRentCost.toFixed(2)}</span>
                     </div>
-                    {/* Inside the Quotation Box breakdown: */}
                     <div className="flex justify-between text-gray-600">
                       <span className="flex items-center gap-1">
                         {user?.kyc_status === 'verified' ? (
@@ -543,8 +567,66 @@ const ProductDetail = () => {
           </div>
         )}
       </div>
+
+      {/* NEW: Similar Products / Alternatives Recommendation Section */}
+      {similarProducts.length > 0 && (
+        <div className="bg-white p-6 rounded-xl border border-gray-200 space-y-4">
+          <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-indigo-600" />
+              <div>
+                <h3 className="text-base font-bold text-gray-900">
+                  Similar Equipment You Might Also Like
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Ranked by category match, locality proximity, and verified ratings
+                </p>
+              </div>
+            </div>
+
+            {similarProducts.length > 3 && (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => handleScrollSimilar('left')}
+                  className="p-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 transition"
+                  title="Scroll Left"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => handleScrollSimilar('right')}
+                  className="p-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 transition"
+                  title="Scroll Right"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div
+            ref={similarScrollRef}
+            className="flex gap-5 overflow-x-auto pb-4 pt-1 scrollbar-none scroll-smooth"
+            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          >
+            {similarProducts.map((simProd) => (
+              <div
+                key={simProd.id}
+                className="w-[280px] sm:w-[300px] flex-shrink-0 flex flex-col"
+              >
+                <ProductCard product={simProd} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
 export default ProductDetail;
+
+
+/*
+What is being added:API Call: Automatically fetches recommendations from GET /api/v1/rms/user/recommendations/similar/:productId when the product details load.  Horizontal Carousel: Renders a "Similar Equipment You Might Also Like" section directly below the Customer Reviews section.  Smooth Scroll Controls: Includes scroll arrows (ChevronLeft, ChevronRight) matching the styling in Catalog.jsx.  Reusing ProductCard: Directly uses the verified ProductCard component so city proximity badges, images, and pricing details stay consistent.
+*/

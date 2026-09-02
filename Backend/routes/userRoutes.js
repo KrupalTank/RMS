@@ -10,6 +10,8 @@ const { verifyToken } = require('../middlewares/authMiddleware');
 const upload = require('../middlewares/uploadMiddleware');
 const { validateRequired } = require('../middlewares/validateMiddleware');
 
+const recommendationController = require('../controllers/recommendationController');
+
 // All user routes require authentication
 router.use(verifyToken);
 
@@ -46,4 +48,9 @@ router.post('/cancelOrder', validateRequired(['order_id']), orderController.canc
 router.post('/review/:id', validateRequired(['rating', 'comment']), userController.postReview);
 
 router.get('/myCoupons', userController.getMyCoupons);
+
+router.get('/recommendations/similar/:productId', recommendationController.getSimilar);
+router.post('/recommendations/frequentlyRentedTogether', recommendationController.getFrequentlyRentedTogether);
+router.get('/recommendations/forYou', recommendationController.getPersonalized);
+
 module.exports = router;

@@ -1,3 +1,4 @@
+// src/pages/customer/Catalog.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../../api/axiosInstance';
 import ProductCard from '../../components/ProductCard';
@@ -10,6 +11,7 @@ import {
   ChevronRight,
   ArrowRight,
   Grid,
+  Sparkles,
 } from 'lucide-react';
 
 const CategoryRow = ({ catName, items, onSelectCategory }) => {
@@ -89,20 +91,26 @@ const CategoryRow = ({ catName, items, onSelectCategory }) => {
 const Catalog = () => {
   const [allProducts, setAllProducts] = useState([]);
   const [displayedProducts, setDisplayedProducts] = useState([]);
+  const [personalizedProducts, setPersonalizedProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const recommendedScrollRef = useRef(null);
 
-  // Fetch products
-  const fetchProducts = async () => {
+  // Fetch products and personalized feed
+  const fetchProductsAndRecommendations = async () => {
     setLoading(true);
     setError('');
     try {
-      const res = await api.get('/user/getProducts');
-      if (res.data.success) {
-        const prods = res.data.products || [];
+      const [prodsRes, forYouRes] = await Promise.all([
+        api.get('/user/getProducts'),
+        api.get('/user/recommendations/forYou?limit=8').catch(() => ({ data: { success: false } })),
+      ]);
+
+      if (prodsRes.data.success) {
+        const prods = prodsRes.data.products || [];
         setAllProducts(prods);
         setDisplayedProducts(prods);
 
@@ -110,6 +118,10 @@ const Catalog = () => {
           new Set(prods.map((p) => p.category_name).filter(Boolean))
         );
         setCategories(distinctCategories);
+      }
+
+      if (forYouRes.data?.success) {
+        setPersonalizedProducts(forYouRes.data.products || []);
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to load catalog.');
@@ -119,7 +131,7 @@ const Catalog = () => {
   };
 
   useEffect(() => {
-    fetchProducts();
+    fetchProductsAndRecommendations();
   }, []);
 
   // Filter products by category
@@ -158,6 +170,13 @@ const Catalog = () => {
       setError(err.response?.data?.message || 'Search failed.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleScrollRecommended = (direction) => {
+    if (recommendedScrollRef.current) {
+      const scrollAmount = direction === 'left' ? -340 : 340;
+      recommendedScrollRef.current.scrollBy({ left: scrollAmount, behavior: 'smooth' });
     }
   };
 
@@ -241,6 +260,62 @@ const Catalog = () => {
       ) : selectedCategory === 'ALL' ? (
         /* Single Horizontal Carousel Row per Category */
         <div className="space-y-12">
+          {/* Top Row: Personalized Recommendations */}
+          {personalizedProducts.length > 0 && (
+            <div className="bg-gradient-to-r from-blue-50 via-indigo-50/40 to-white p-5 rounded-2xl border border-indigo-100/80 space-y-3">
+              <div className="flex items-center justify-between border-b border-indigo-100/70 pb-2.5">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-1.5 bg-indigo-600 rounded-lg text-white">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-black text-gray-900 flex items-center gap-2">
+                      Recommended For You
+                    </h2>
+                    <p className="text-xs text-gray-500">
+                      Curated based on your rental activity, locality, and top customer ratings
+                    </p>
+                  </div>
+                </div>
+
+                {personalizedProducts.length > 3 && (
+                  <div className="hidden sm:flex items-center gap-1">
+                    <button
+                      onClick={() => handleScrollRecommended('left')}
+                      className="p-1.5 rounded-lg bg-white hover:bg-gray-100 text-gray-600 border border-gray-200 shadow-sm transition"
+                      title="Scroll Left"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleScrollRecommended('right')}
+                      className="p-1.5 rounded-lg bg-white hover:bg-gray-100 text-gray-600 border border-gray-200 shadow-sm transition"
+                      title="Scroll Right"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div
+                ref={recommendedScrollRef}
+                className="flex gap-5 overflow-x-auto pb-2 pt-1 scrollbar-none scroll-smooth"
+                style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+              >
+                {personalizedProducts.map((recProd) => (
+                  <div
+                    key={`rec-${recProd.id}`}
+                    className="w-[280px] sm:w-[300px] flex-shrink-0 flex flex-col"
+                  >
+                    <ProductCard product={recProd} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Standard Category Rows */}
           {Object.entries(groupedProducts).map(([catName, items]) => (
             <CategoryRow
               key={catName}
@@ -287,3 +362,11 @@ const Catalog = () => {
 };
 
 export default Catalog;
+
+/*
+What is being added:Personalized Feed Fetch: 
+Queries GET /api/v1/rms/user/recommendations/forYou?limit=8 alongside standard catalog items.  
+Dedicated Recommendation Carousel: When browsing with the "ALL" category view, a "Recommended For You" track appears at the very top of the catalog with a distinct badge and visual styling.  
+Smooth Scroll Track: Includes dedicated carousel arrows (ChevronLeft, ChevronRight) matching your existing category rows.  
+Graceful Degradation: If a customer is brand new with no previous rentals, the backend ranking gracefully recommends top-rated items with same-city priority.
+*/
