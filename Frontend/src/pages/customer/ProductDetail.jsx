@@ -28,7 +28,15 @@ import {
   Sparkles,
 } from 'lucide-react';
 
+import { io } from 'socket.io-client';
+import ChatModal from '../../components/ChatModal';
+
 const ProductDetail = () => {
+
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [activeConversation, setActiveConversation] = useState(null);
+  const socketRef = useRef(null);
+
   const { id } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -81,6 +89,34 @@ const ProductDetail = () => {
 
     fetchProductAndRecommendations();
   }, [id]);
+
+  useEffect(() => {
+    const socket = io('http://localhost:5000', { withCredentials: true });
+    socketRef.current = socket;
+    if (user?.id) {
+      socket.emit('join_user_room', user.id);
+    }
+    return () => socket.disconnect();
+  }, [user]);
+
+  const handleOpenInquiryChat = async () => {
+    if (!user) {
+      alert('Please log in to chat with the vendor.');
+      return;
+    }
+    try {
+      const res = await api.post('/chat/getOrCreateConversation', {
+        vendor_id: product.vendor_id,
+        product_id: product.id,
+      });
+      if (res.data.success) {
+        setActiveConversation(res.data.conversation);
+        setIsChatOpen(true);
+      }
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to start chat.');
+    }
+  };
 
   const handleScrollSimilar = (direction) => {
     if (similarScrollRef.current) {
@@ -254,32 +290,56 @@ const ProductDetail = () => {
               {product.description || 'No detailed specifications provided.'}
             </p>
 
-            {/* Vendor Logistics Info */}
-            <div className="pt-4 border-t border-gray-100 space-y-2 text-xs text-gray-600">
-              <div className="flex items-center gap-2">
-                <User className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                <div>
-                  <span className="font-semibold text-gray-800">Vendor Name: </span>
-                  <span>{product.vendor_name || 'Verified Vendor'}</span>
+            {/* Vendor Logistics Info & Contact Card */}
+            <div className="pt-4 border-t border-gray-100 space-y-2.5 text-xs text-gray-600">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <User className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                  <div>
+                    <span className="font-semibold text-gray-800">Vendor: </span>
+                    <span>{product.vendor_name || 'Verified Vendor'}</span>
+                  </div>
                 </div>
+
+                {/* Message Vendor Trigger */}
+                {user && user.role === 'customer' && user.id !== product.vendor_id && (
+                  <button
+                    onClick={() => handleOpenInquiryChat(product)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold rounded-lg border border-blue-200 transition"
+                  >
+                    <span>💬 Message Vendor</span>
+                  </button>
+                )}
               </div>
 
               <div className="flex items-start gap-2">
                 <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
                 <div>
-                  <span className="font-semibold text-gray-800">Pickup Address: </span>
-                  <span>
-                    {product.vendor_address || 'Vendor location details available on booking'}, {product.vendor_city}
-                    {product.vendor_pincode ? ` - ${product.vendor_pincode}` : ''}
-                  </span>
+                  <span className="font-semibold text-gray-800">Location: </span>
+                  {product.is_contact_masked ? (
+                    <span className="text-gray-500 italic">
+                      {product.vendor_city} (Exact street pickup address unlocked upon booking)
+                    </span>
+                  ) : (
+                    <span>
+                      {product.vendor_address}, {product.vendor_city}
+                      {product.vendor_pincode ? ` - ${product.vendor_pincode}` : ''}
+                    </span>
+                  )}
                 </div>
               </div>
 
               <div className="flex items-center gap-2">
                 <Phone className="w-4 h-4 text-gray-400 flex-shrink-0" />
                 <div>
-                  <span className="font-semibold text-gray-800">Vendor Contact: </span>
-                  <span>{product.vendor_phone}</span>
+                  <span className="font-semibold text-gray-800">Direct Contact: </span>
+                  {product.is_contact_masked ? (
+                    <span className="text-gray-500 italic">
+                      Protected • Available via Live Chat or after booking confirmation
+                    </span>
+                  ) : (
+                    <span className="font-bold text-gray-800">{product.vendor_phone}</span>
+                  )}
                 </div>
               </div>
             </div>
@@ -620,6 +680,13 @@ const ProductDetail = () => {
           </div>
         </div>
       )}
+
+      <ChatModal
+        isOpen={isChatOpen}
+        onClose={() => setIsChatOpen(false)}
+        conversation={activeConversation}
+        socket={socketRef.current}
+      />
     </div>
   );
 };

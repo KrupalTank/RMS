@@ -201,3 +201,43 @@ Distributed under the MIT License. Developed for enterprise equipment rental man
 * **Database & Ledger Consistency:**
   * Updated `payouts` table schema updates to record unique gateway reference UTRs, payment mode, and settlement timestamps atomically.
   * Synchronized real-time balance metrics across Platform Retained Balances and Settled Outflows in the Transaction Ledger.
+
+
+  ### 🏷️ Version 4.0.0 — In-App Dual-Mode Messaging, Disintermediation Guardrails & Automated Data Retention
+
+#### 📌 Overview & Motivation
+As the marketplace expanded, direct vendor-customer coordination became essential for clarifying equipment specifications, accessories, and physical pickup/handover logistics. However, exposing personal contact details prior to payment introduced the critical threat of **Platform Disintermediation (Platform Leakage)**—where parties bypass the platform to avoid commission fees, losing automated escrow security and verified review audits in the process. Version 4.0.0 resolves this by introducing an in-app real-time messaging engine paired with strict information masking, disintermediation regex scrubbers, and a tiered automated data retention lifecycle.
+
+---
+
+#### 🚨 Problems Encountered & Architectural Solutions
+
+| Challenge / Problem | Root Cause | Engineering Solution |
+| :--- | :--- | :--- |
+| **Off-Platform Leakage (Disintermediation)** | Public product pages revealed vendor phone numbers and exact street addresses before booking. | **Asymmetric Information Masking:** Sanitized `getProductById` queries to withhold phone and street details until an order enters `Lock` status. On public catalog views, only generalized locality (city) is shown. |
+| **Bypassing Protections in Chat** | Users could attempt to exchange phone numbers, emails, or UPI IDs directly within pre-booking chat threads. | **Server-Side Disintermediation Scrubber:** Applied regex filters on pre-booking messages to automatically redact 10-digit phone numbers, emails, and payment handles with safety warnings. |
+| **Database Storage Bloat** | Storing ephemeral negotiation messages and high-volume gear inquiries indefinitely degrades database read performance. | **Tiered Data Retention Policy (TTL):**<br>• Pre-booking inquiries: Auto-purged after **3 days** of inactivity.<br>• Concluded rentals (`Returned`, `Lost`, `Cancelled`): Auto-purged after **7 days** of inactivity.<br>• Active rentals (`Lock`, `With Customer`): Retained throughout duration. Cascading foreign keys (`ON DELETE CASCADE`) ensure complete cleanup without orphaned records. |
+| **Multi-Customer Chat Organization** | Vendors receiving simultaneous inquiries from multiple customers about multiple products experienced fragmented communication. | **Master-Detail Two-Pane Inbox:** Implemented a split-view inbox inside `VendorDashboard.jsx` separating isolated conversation threads (with unread counters and product thumbnails) on the left from the active messaging stream on the right. |
+| **Handover Status Desynchronization** | When customers confirmed item receipt, competing socket instances and type mismatches (`string` vs `number` order IDs) caused network failures, leaving customer views stale without manual refresh. | **Unified Socket Channel & State Reflection:** Consolidated duplicate socket listeners, enforced numeric ID parsing, eliminated redundant emissions in `orderController.js`, and enabled optimistic local state updates. |
+
+---
+
+#### ⚙️ Technical Implementation Details
+
+1. **Database Schema & Indexing (`PostgreSQL`):**
+   * `chat_conversations`: Tracks thread participants (`customer_id`, `vendor_id`), context bindings (`product_id`, `order_id`), unread counters, and `last_message_at` timestamps. Enforces uniqueness across `(customer_id, vendor_id, product_id)`.
+   * `chat_messages`: High-throughput message ledger recording message content, sender ID, read receipts, and timestamps with cascading deletion.
+   * Optimized B-tree composite indexes on `(customer_id, last_message_at DESC)` and `(vendor_id, last_message_at DESC)` for sub-millisecond inbox queries.
+
+2. **Real-Time WebSocket Architecture (`Socket.io`):**
+   * Dynamic room isolation using `conversation_${conversationId}` rooms for active message delivery.
+   * Private user channels (`user_${userId}`) emitting `INBOX_UPDATED` and `ORDER_STATUS_CHANGED` events to update unread badge counts across navigation bars and dashboard tabs in real time.
+
+3. **Automated Scheduled Maintenance (`node-cron`):**
+   * Configured an automated daily midnight cron job (`0 0 * * *` IST) running `purgeExpiredChats()` to evaluate conversation activity intervals against the tiered retention matrix.
+
+4. **Frontend Components & User Experience (`React` + `Tailwind CSS`):**
+   * **`ProductDetail.jsx`:** Masked logistics card showing locality with an integrated "Message Vendor" modal launcher.
+   * **`CustomerOrders.jsx`:** Order-bound "Chat Vendor" triggers embedded directly into active booking cards.
+   * **`ChatModal.jsx`:** Floating, collapsible messenger for customers featuring auto-scrolling message streams and expiration notices.
+   * **`VendorDashboard.jsx`:** Two-pane responsive workspace with unread indicators, gear context badges, and responsive half-screen scroll containers.

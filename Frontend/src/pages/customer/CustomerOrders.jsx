@@ -1,8 +1,10 @@
 // src/pages/customer/CustomerOrders.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 import api from '../../api/axiosInstance';
 import { useAuth } from '../../context/AuthContext';
+import ChatModal from '../../components/ChatModal';
+
 import {
   Package,
   Clock,
@@ -16,6 +18,7 @@ import {
   AlertCircle,
   X,
   Tag,
+  MessageSquare,
 } from 'lucide-react';
 
 const CustomerOrders = () => {
@@ -34,6 +37,11 @@ const CustomerOrders = () => {
 
   const [cancellingOrder, setCancellingOrder] = useState(null);
   const [cancelSubmitting, setCancelSubmitting] = useState(false);
+
+  // Chat State
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [activeConversation, setActiveConversation] = useState(null);
+  const socketRef = useRef(null);
 
   const handleCustomerCancelOrder = async () => {
     if (!cancellingOrder) return;
@@ -71,16 +79,23 @@ const CustomerOrders = () => {
     }
   };
 
+  // MERGED SINGLE SOCKET EFFECT in CustomerOrders.jsx
   useEffect(() => {
     fetchOrders();
 
     const socket = io('http://localhost:5000', { withCredentials: true });
+    socketRef.current = socket;
+
+    if (user?.id) {
+      socket.emit('join_user_room', user.id);
+    }
 
     socket.on('ORDER_STATUS_CHANGED', (data) => {
-      if (data.customerId === user?.id) {
+      // Check if this update belongs to current logged-in customer
+      if (!data.customerId || Number(data.customerId) === Number(user?.id)) {
         setOrders((prevOrders) =>
           prevOrders.map((o) =>
-            o.id === data.orderId ? { ...o, status: data.newStatus } : o
+            Number(o.id) === Number(data.orderId) ? { ...o, status: data.newStatus } : o
           )
         );
       }
@@ -91,15 +106,33 @@ const CustomerOrders = () => {
     };
   }, [user?.id]);
 
+  const handleOpenOrderChat = async (order) => {
+    try {
+      const res = await api.post('/chat/getOrCreateConversation', {
+        vendor_id: order.vendor_id,
+        product_id: order.product_id,
+        order_id: order.id,
+      });
+      if (res.data.success) {
+        setActiveConversation(res.data.conversation);
+        setIsChatOpen(true);
+      }
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to open order chat.');
+    }
+  };
+
   const handleConfirmHandover = async (orderId) => {
-    setActionLoadingId(orderId);
+    const numericId = parseInt(orderId, 10);
+    setActionLoadingId(numericId);
     setError('');
 
     try {
-      const res = await api.post('/user/changeOrderStatus', { order_id: orderId });
+      const res = await api.post('/user/changeOrderStatus', { order_id: numericId });
       if (res.data.success) {
+        // Instantly switch to 'With Customer' on customer side without waiting or refreshing
         setOrders((prev) =>
-          prev.map((o) => (o.id === orderId ? { ...o, status: 'With Customer' } : o))
+          prev.map((o) => (Number(o.id) === numericId ? { ...o, status: 'With Customer' } : o))
         );
       }
     } catch (err) {
@@ -319,9 +352,18 @@ const CustomerOrders = () => {
                   </div>
 
                   {/* Action Column (3 cols) */}
-                  <div className="md:col-span-3 flex flex-col items-end justify-center gap-2">
+                  <div className="md:col-span-3 flex flex-col items-stretch justify-center gap-2">
+                    {/* Real-Time Chat Button */}
+                    <button
+                      onClick={() => handleOpenOrderChat(order)}
+                      className="w-full py-1.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-lg border border-blue-200 transition flex items-center justify-center gap-1.5"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>Chat Vendor</span>
+                    </button>
+
                     {order.status === 'Lock' && (
-                      <div className="flex flex-col gap-2 w-full">
+                      <>
                         <button
                           onClick={() => handleConfirmHandover(order.id)}
                           disabled={actionLoadingId === order.id}
@@ -337,7 +379,7 @@ const CustomerOrders = () => {
                         >
                           Cancel Booking
                         </button>
-                      </div>
+                      </>
                     )}
 
                     {['With Customer', 'Returned'].includes(order.status) && (
@@ -503,7 +545,7 @@ const CustomerOrders = () => {
                   Keep Booking
                 </button>
                 <button
-                  type="button"
+                  type="submit"
                   onClick={handleCustomerCancelOrder}
                   disabled={cancelSubmitting}
                   className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold disabled:opacity-50 transition"
@@ -515,6 +557,13 @@ const CustomerOrders = () => {
           </div>
         );
       })()}
+
+      <ChatModal
+        isOpen={isChatOpen}
+        onClose={() => setIsChatOpen(false)}
+        conversation={activeConversation}
+        socket={socketRef.current}
+      />
     </div>
   );
 };

@@ -66,16 +66,20 @@ exports.confirmOrderReceived = async (req, res) => {
     );
 
     // Emit real-time notification
+    // In controllers/orderController.js -> confirmOrderReceived
     const io = req.app.get('socketio');
     if (io) {
+      const numericOrderId = parseInt(order_id, 10);
+
       io.emit('ORDER_STATUS_CHANGED', {
-        orderId: order_id,
-        vendorId: order.vendor_id,
+        orderId: numericOrderId,
         newStatus: 'With Customer',
+        vendorId: order.vendor_id,
+        customerId: req.user.id,
       });
 
       io.emit('PAYOUT_GENERATED', {
-        orderId: order_id,
+        orderId: numericOrderId,
         vendorId: order.vendor_id,
         type: 'rent_handover',
       });

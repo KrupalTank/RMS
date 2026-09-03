@@ -98,8 +98,54 @@ async function processLostOrders() {
   }
 }
 
+
+/**
+ * Purge stale chat conversations based on the tiered data retention policy:
+ * - Inquiries (order_id IS NULL): 3-day TTL from last message
+ * - Concluded orders (Returned, Lost, Cancelled): 7-day TTL from last message
+ * Note: chat_messages rows are automatically removed via ON DELETE CASCADE.
+ */
+const purgeExpiredChats = async () => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Purge standalone inquiries older than 3 days
+    const inquiryResult = await client.query(`
+      DELETE FROM chat_conversations
+      WHERE order_id IS NULL
+        AND last_message_at < NOW() - INTERVAL '3 days'
+      RETURNING id
+    `);
+
+    // 2. Purge chats for finalized/terminal orders older than 7 days
+    const orderChatResult = await client.query(`
+      DELETE FROM chat_conversations cc
+      USING orders o
+      WHERE cc.order_id = o.id
+        AND o.status IN ('Returned', 'Lost', 'Cancelled')
+        AND cc.last_message_at < NOW() - INTERVAL '7 days'
+      RETURNING cc.id
+    `);
+
+    await client.query('COMMIT');
+
+    const totalPurged = inquiryResult.rowCount + orderChatResult.rowCount;
+    if (totalPurged > 0) {
+      console.log(
+        `🧹 Chat Purge Run: Cleaned ${inquiryResult.rowCount} stale inquiry thread(s) and ${orderChatResult.rowCount} concluded order thread(s).`
+      );
+    }
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('❌ Error executing chat retention purge:', err.message);
+  } finally {
+    client.release();
+  }
+};
+
 function initCronJobs() {
-  // Cron Job 1: Every 5 minutes - Delete uncompleted parent orders older than 5 minutes
+  // Cron Job 1: Every 5 minutes - Delete uncompleted parent orders older than 5 minutes[cite: 9]
   cron.schedule('*/5 * * * *', async () => {
     try {
       const expiredQuery = `
@@ -119,7 +165,7 @@ function initCronJobs() {
     }
   });
 
-  // Cron Job 2: Daily at 9:00 PM IST (21:00)
+  // Cron Job 2: Daily at 9:00 PM IST (21:00) - Reconcile Overdue Lost Orders[cite: 9]
   cron.schedule(
     '0 21 * * *',
     async () => {
@@ -130,6 +176,18 @@ function initCronJobs() {
       } catch (err) {
         console.error('⚠️ 9:00 PM Cron failed:', err.message);
       }
+    },
+    {
+      timezone: 'Asia/Kolkata',
+    }
+  );
+
+  // Cron Job 3: Daily at Midnight IST (00:00) - State-Aware Chat Retention Purge[cite: 9]
+  cron.schedule(
+    '0 0 * * *',
+    async () => {
+      console.log('⏰ Running scheduled midnight Chat Retention Purge...');
+      await purgeExpiredChats();
     },
     {
       timezone: 'Asia/Kolkata',

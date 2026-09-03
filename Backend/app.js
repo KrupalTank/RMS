@@ -10,6 +10,7 @@ const userRoutes = require('./routes/userRoutes');
 const vendorRoutes = require('./routes/vendorRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const chatRoutes = require('./routes/chatRoutes');
 
 const app = express();
 
@@ -36,6 +37,7 @@ app.use('/api/v1/rms/user', userRoutes);
 app.use('/api/v1/rms/vendor', vendorRoutes);
 app.use('/api/v1/rms/payment', paymentRoutes);
 app.use('/api/v1/rms/admin', adminRoutes);
+app.use('/api/v1/rms/chat', chatRoutes);
 
 // Global Error Handler
 app.use((err, req, res, next) => {

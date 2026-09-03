@@ -29,6 +29,10 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log(`WebSocket client disconnected: ${socket.id}`);
   });
+
+  socket.on('join_user_room', (userId) => {
+    socket.join(`user_${userId}`);
+  });
 });
 
 // Export io instance so controllers/services can emit events

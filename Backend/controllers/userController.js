@@ -204,14 +204,21 @@ exports.searchProducts = async (req, res) => {
 };
 
 // GET /api/v1/rms/user/getProduct/:id
+// In controllers/userController.js
+// GET /api/v1/rms/user/getProduct/:id
 exports.getProductById = async (req, res) => {
   try {
     const { id } = req.params;
+    const currentUserId = req.user?.id || null;
 
     const productQuery = `
       SELECT p.*, p.cancellation_fee, c.name AS category_name,
-            u.full_name AS vendor_name, u.phone AS vendor_phone, 
-            u.address AS vendor_address, u.city AS vendor_city, u.pincode AS vendor_pincode
+             u.id AS vendor_id,
+             u.full_name AS vendor_name, 
+             u.phone AS vendor_phone, 
+             u.address AS vendor_address, 
+             u.city AS vendor_city, 
+             u.pincode AS vendor_pincode
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
       JOIN users u ON p.vendor_id = u.id
@@ -222,6 +229,34 @@ exports.getProductById = async (req, res) => {
     if (productRes.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Product not found.' });
     }
+
+    const rawProduct = productRes.rows[0];
+
+    // Check if requester has a paid/confirmed booking for this product
+    let hasConfirmedOrder = false;
+    if (currentUserId) {
+      const orderCheck = await pool.query(
+        `SELECT id FROM orders 
+         WHERE customer_id = $1 
+           AND product_id = $2 
+           AND status IN ('Lock', 'With Customer', 'Returned')
+         LIMIT 1`,
+        [currentUserId, id]
+      );
+      hasConfirmedOrder = orderCheck.rows.length > 0;
+    }
+
+    // Mask direct contact details prior to confirmed booking
+    const sanitizedProduct = {
+      ...rawProduct,
+      vendor_phone: hasConfirmedOrder
+        ? rawProduct.vendor_phone
+        : null,
+      vendor_address: hasConfirmedOrder
+        ? rawProduct.vendor_address
+        : null,
+      is_contact_masked: !hasConfirmedOrder,
+    };
 
     // Fetch product reviews
     const reviewsQuery = `
@@ -235,7 +270,7 @@ exports.getProductById = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      product: productRes.rows[0],
+      product: sanitizedProduct,
       reviews: reviewsRes.rows,
     });
   } catch (error) {

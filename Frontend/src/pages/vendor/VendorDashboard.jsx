@@ -1,6 +1,9 @@
-import React, { useState, useEffect } from 'react';
+// src/pages/vendor/VendorDashboard.jsx
+import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 import api from '../../api/axiosInstance';
+import { useAuth } from '../../context/AuthContext';
+import { parseProductImages } from '../../utils/imageHelper';
 import {
   Store,
   Package,
@@ -19,10 +22,16 @@ import {
   AlertCircle,
   RefreshCw,
   Trash2,
+  MessageSquare,
+  Send,
+  User,
+  Shield,
+  Clock,
 } from 'lucide-react';
 
 const VendorDashboard = () => {
-  const [activeTab, setActiveTab] = useState('inventory'); // 'inventory' | 'orders'
+  const { user } = useAuth();
+  const [activeTab, setActiveTab] = useState('inventory'); // 'inventory' | 'orders' | 'messages'
 
   // Data states
   const [products, setProducts] = useState([]);
@@ -30,6 +39,14 @@ const VendorDashboard = () => {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState({ success: '', error: '' });
+
+  // Chat Data States
+  const [conversations, setConversations] = useState([]);
+  const [selectedConv, setSelectedConv] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [sendingMessage, setSendingMessage] = useState(false);
+  const [chatLoading, setChatLoading] = useState(false);
 
   // Modal States
   const [showProductModal, setShowProductModal] = useState(false);
@@ -63,7 +80,15 @@ const VendorDashboard = () => {
   const [productCondition, setProductCondition] = useState('Good');
   const [orderActionLoading, setOrderActionLoading] = useState(false);
 
-  // 1. Fetch initial vendor inventory and orders
+  // Socket & Auto-scroll Refs
+  const socketRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  // 1. Fetch initial vendor inventory and orders[cite: 7]
   const fetchData = async () => {
     setLoading(true);
     setBanner({ success: '', error: '' });
@@ -87,19 +112,145 @@ const VendorDashboard = () => {
     }
   };
 
+  // 2. Fetch Chat Conversations
+  const fetchConversations = async () => {
+    try {
+      const res = await api.get('/chat/myConversations');
+      if (res.data.success) {
+        setConversations(res.data.conversations || []);
+      }
+    } catch (err) {
+      console.error('Fetch conversations error:', err);
+    }
+  };
+
+  // 3. Fetch Messages for Selected Conversation
+  const loadMessages = async (convId) => {
+    setChatLoading(true);
+    try {
+      const res = await api.get(`/chat/messages/${convId}`);
+      if (res.data.success) {
+        setMessages(res.data.messages || []);
+        // Reset unread count locally in list
+        setConversations((prev) =>
+          prev.map((c) => (c.id === convId ? { ...c, unread_vendor_count: 0 } : c))
+        );
+      }
+    } catch (err) {
+      console.error('Load messages error:', err);
+    } finally {
+      setChatLoading(false);
+      setTimeout(scrollToBottom, 50);
+    }
+  };
+
+  // Initialize socket and data
   useEffect(() => {
     fetchData();
+    fetchConversations();
 
-    // Live Socket listener for incoming bookings
     const socket = io('http://localhost:5000', { withCredentials: true });
+    socketRef.current = socket;
+
+    if (user?.id) {
+      socket.emit('join_user_room', user.id);
+    }
+
     socket.on('ORDER_LOCKED', () => {
       fetchData();
     });
 
-    return () => socket.disconnect();
-  }, []);
+    socket.on('INBOX_UPDATED', () => {
+      fetchConversations();
+    });
 
-  // 2. Open Add Product Modal
+    socket.on('ORDER_STATUS_CHANGED', (data) => {
+      // Option A: Instantly update order state in-place
+      setOrders((prevOrders) =>
+        prevOrders.map((o) =>
+          o.id === data.orderId ? { ...o, status: data.newStatus } : o
+        )
+      );
+      // Option B: Also call fetchData() to sync counts if needed
+      fetchData();
+    });
+
+   
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [user]);
+
+  // Handle room joining when selected conversation changes
+  useEffect(() => {
+    if (selectedConv && socketRef.current) {
+      loadMessages(selectedConv.id);
+      socketRef.current.emit('join_room', `conversation_${selectedConv.id}`);
+
+      const handleIncomingMessage = (newMsg) => {
+        if (newMsg.conversation_id === selectedConv.id) {
+          setMessages((prev) => [...prev, newMsg]);
+          setTimeout(scrollToBottom, 50);
+        }
+      };
+
+      socketRef.current.on('NEW_MESSAGE', handleIncomingMessage);
+
+      return () => {
+        socketRef.current.off('NEW_MESSAGE', handleIncomingMessage);
+      };
+    }
+  }, [selectedConv]);
+
+  const handleSelectConversation = (conv) => {
+    setSelectedConv(conv);
+  };
+
+  // Send Message Handler
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!chatInput.trim() || !selectedConv || sendingMessage) return;
+
+    setSendingMessage(true);
+    try {
+      const res = await api.post('/chat/sendMessage', {
+        conversation_id: selectedConv.id,
+        message_text: chatInput.trim(),
+      });
+
+      if (res.data.success) {
+        setChatInput('');
+        fetchConversations();
+      }
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to send message.');
+    } finally {
+      setSendingMessage(false);
+      setTimeout(scrollToBottom, 50);
+    }
+  };
+
+  // Open Chat from Order Card
+  const handleOpenOrderChat = async (ord) => {
+    try {
+      const res = await api.post('/chat/getOrCreateConversation', {
+        vendor_id: user.id,
+        customer_id: ord.customer_id,
+        product_id: ord.product_id,
+        order_id: ord.id,
+      });
+
+      if (res.data.success) {
+        setActiveTab('messages');
+        setSelectedConv(res.data.conversation);
+      }
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to initiate order chat.');
+    }
+  };
+
+  // 2. Open Add Product Modal[cite: 7]
   const handleOpenAddModal = () => {
     setIsEditing(false);
     setEditingProductId(null);
@@ -109,7 +260,7 @@ const VendorDashboard = () => {
     setShowProductModal(true);
   };
 
-  // 3. Open Edit Product Modal
+  // 3. Open Edit Product Modal[cite: 7]
   const handleOpenEditModal = (product) => {
     setIsEditing(true);
     setEditingProductId(product.id);
@@ -139,14 +290,13 @@ const VendorDashboard = () => {
     setShowProductModal(true);
   };
 
-  // 4. Handle Image File Selection (Max 6 total)
+  // 4. Handle Image File Selection (Max 6 total)[cite: 7]
   const ALLOWED_TYPES = ['image/jpeg', 'image/jpg', 'image/png'];
   const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png'];
 
   const handleFileChange = (e) => {
     const selectedFiles = Array.from(e.target.files);
 
-    // 1. Validate MIME type and file extension
     const invalidFiles = selectedFiles.filter((file) => {
       const fileExt = '.' + file.name.split('.').pop().toLowerCase();
       const isMimeValid = ALLOWED_TYPES.includes(file.type.toLowerCase());
@@ -156,11 +306,10 @@ const VendorDashboard = () => {
 
     if (invalidFiles.length > 0) {
       alert('Invalid file format! Only JPG, JPEG, and PNG images are allowed.');
-      e.target.value = ''; // Reset the input selection
+      e.target.value = '';
       return;
     }
 
-    // 2. Validate max 6 images slot constraint
     const availableSlots = 6 - (existingImages.length + newImageFiles.length);
 
     if (selectedFiles.length > availableSlots) {
@@ -170,7 +319,7 @@ const VendorDashboard = () => {
     }
 
     setNewImageFiles((prev) => [...prev, ...selectedFiles.slice(0, availableSlots)]);
-    e.target.value = ''; // Reset input so re-selecting the same file works cleanly
+    e.target.value = '';
   };
 
   const handleRemoveExistingImage = (indexToRemove) => {
@@ -181,12 +330,11 @@ const VendorDashboard = () => {
     setNewImageFiles((prev) => prev.filter((_, idx) => idx !== indexToRemove));
   };
 
-  // 5. Submit Add / Edit Product
+  // 5. Submit Add / Edit Product[cite: 7]
   const handleSaveProduct = async (e) => {
     e.preventDefault();
     setBanner({ success: '', error: '' });
 
-    // Validate tier rate logic: Tier 1_4 >= Tier 5_9 >= Tier 10_onwards
     const r1 = parseFloat(formData.rent_per_day_1_4);
     const r2 = parseFloat(formData.rent_per_day_5_9);
     const r3 = parseFloat(formData.rent_per_day_10_onwards);
@@ -239,7 +387,7 @@ const VendorDashboard = () => {
     }
   };
 
-  // 6. Create Category
+  // 6. Create Category[cite: 7]
   const handleAddCategory = async (e) => {
     e.preventDefault();
     if (!newCategoryName.trim()) return;
@@ -257,7 +405,7 @@ const VendorDashboard = () => {
     }
   };
 
-  // 7. Order Status Management (Cancel / Return Inspection)
+  // 7. Order Status Management (Cancel / Return Inspection)[cite: 7]
   const handleCancelOrder = async (orderId) => {
     if (!window.confirm('Are you sure you want to cancel this booking before delivery?')) return;
     setOrderActionLoading(true);
@@ -315,9 +463,14 @@ const VendorDashboard = () => {
     );
   }
 
+  const totalUnreadMessages = conversations.reduce(
+    (acc, c) => acc + (parseInt(c.unread_vendor_count, 10) || 0),
+    0
+  );
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-      {/* Top Header */}
+      {/* Top Header[cite: 7] */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-200 pb-4">
         <div>
           <h1 className="text-2xl font-extrabold text-gray-900 flex items-center gap-2">
@@ -325,7 +478,7 @@ const VendorDashboard = () => {
             <span>Vendor Management Portal</span>
           </h1>
           <p className="text-xs text-gray-500 mt-1">
-            Manage your rental catalog, configure duration tier rates, and inspect returns.
+            Manage your rental catalog, configure duration tier rates, coordinate logistics, and inspect returns[cite: 7].
           </p>
         </div>
 
@@ -345,7 +498,7 @@ const VendorDashboard = () => {
         </div>
       </div>
 
-      {/* Status Notifications */}
+      {/* Status Notifications[cite: 7] */}
       {banner.success && (
         <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2 text-xs text-emerald-800">
           <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
@@ -359,7 +512,7 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* Tabs Switcher */}
+      {/* Tabs Switcher[cite: 7] */}
       <div className="flex border-b border-gray-200 space-x-8">
         <button
           onClick={() => setActiveTab('inventory')}
@@ -384,16 +537,33 @@ const VendorDashboard = () => {
           <Package className="w-4 h-4" />
           <span>Rental Orders & Returns ({orders.length})</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('messages')}
+          className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition ${
+            activeTab === 'messages'
+              ? 'border-emerald-600 text-emerald-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <MessageSquare className="w-4 h-4" />
+          <span>Customer Inquiries & Messages</span>
+          {totalUnreadMessages > 0 && (
+            <span className="bg-rose-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full">
+              {totalUnreadMessages}
+            </span>
+          )}
+        </button>
       </div>
 
-      {/* TAB 1: INVENTORY & PRODUCTS */}
+      {/* TAB 1: INVENTORY & PRODUCTS[cite: 7] */}
       {activeTab === 'inventory' && (
         <div className="space-y-4">
           {products.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-gray-200 space-y-3">
               <Layers className="w-12 h-12 text-gray-300 mx-auto" />
               <h3 className="text-sm font-bold text-gray-800">No products in your catalog</h3>
-              <p className="text-xs text-gray-500">Add equipment and list items for rent.</p>
+              <p className="text-xs text-gray-500">Add equipment and list items for rent[cite: 7].</p>
               <button
                 onClick={handleOpenAddModal}
                 className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-semibold"
@@ -404,11 +574,7 @@ const VendorDashboard = () => {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {products.map((prod) => {
-                const images = Array.isArray(prod.images)
-                  ? prod.images
-                  : typeof prod.images === 'string'
-                  ? JSON.parse(prod.images || '[]')
-                  : [];
+                const images = parseProductImages(prod.images);
                 const primaryImg = images[0] || 'https://placehold.co/400x300?text=No+Image';
 
                 return (
@@ -417,7 +583,6 @@ const VendorDashboard = () => {
                     className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm flex flex-col justify-between"
                   >
                     <div>
-                      {/* Image Banner */}
                       <div className="relative h-44 w-full bg-gray-100">
                         <img
                           src={primaryImg}
@@ -432,7 +597,6 @@ const VendorDashboard = () => {
                         </span>
                       </div>
 
-                      {/* Info & Rates */}
                       <div className="p-4 space-y-3">
                         <div className="flex justify-between items-start">
                           <h3 className="text-base font-bold text-gray-900 line-clamp-1">{prod.title}</h3>
@@ -443,7 +607,6 @@ const VendorDashboard = () => {
 
                         <p className="text-xs text-gray-500 line-clamp-2">{prod.description}</p>
 
-                        {/* Tier Pricing Grid */}
                         <div className="bg-gray-50 p-2.5 rounded-lg border border-gray-100 grid grid-cols-3 gap-1.5 text-center text-xs">
                           <div className="border-r border-gray-200 pr-1">
                             <span className="block text-[10px] text-gray-400 font-medium">1–4 Days</span>
@@ -459,7 +622,6 @@ const VendorDashboard = () => {
                           </div>
                         </div>
 
-                        {/* Escrow & Late Fees */}
                         <div className="text-[11px] text-gray-500 space-y-1">
                           <div className="flex justify-between">
                             <span>Verified Deposit / Late Fee:</span>
@@ -477,7 +639,6 @@ const VendorDashboard = () => {
                       </div>
                     </div>
 
-                    {/* Card Actions */}
                     <div className="p-4 pt-0 border-t border-gray-100 flex items-center justify-between mt-3">
                       <span className="text-[11px] font-semibold text-emerald-700">
                         Active Rentals: {prod.active_rentals_count || 0}
@@ -497,14 +658,14 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* TAB 2: ORDERS & RETURN INSPECTION */}
+      {/* TAB 2: ORDERS & RETURN INSPECTION[cite: 7] */}
       {activeTab === 'orders' && (
         <div className="space-y-4">
           {orders.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
               <Package className="w-12 h-12 text-gray-300 mx-auto mb-2" />
               <h3 className="text-sm font-bold text-gray-800">No rental bookings yet</h3>
-              <p className="text-xs text-gray-500">Customer orders for your products will appear here.</p>
+              <p className="text-xs text-gray-500">Customer orders for your products will appear here[cite: 7].</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -544,8 +705,16 @@ const VendorDashboard = () => {
                     </div>
                   </div>
 
-                  {/* Actions for Vendor */}
                   <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+                    {/* Direct Chat with Customer */}
+                    <button
+                      onClick={() => handleOpenOrderChat(ord)}
+                      className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-lg border border-blue-200 transition flex items-center gap-1"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>Chat</span>
+                    </button>
+
                     {ord.status === 'Lock' && (
                       <button
                         onClick={() => handleCancelOrder(ord.id)}
@@ -572,7 +741,201 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* MODAL: ADD / EDIT PRODUCT */}
+      {/* TAB 3: TWO-PANE INBOX & MESSAGES (Fully Responsive & Scrollable) */}
+      {activeTab === 'messages' && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden flex flex-col lg:grid lg:grid-cols-12 min-h-[620px] max-h-[85vh]">
+          {/* Left Pane: Conversation Threads */}
+          <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-gray-200 flex flex-col h-64 lg:h-full bg-gray-50/50 min-w-0">
+            <div className="p-3.5 border-b border-gray-200 bg-white flex-shrink-0">
+              <h2 className="text-sm font-extrabold text-gray-900 flex items-center gap-2">
+                <MessageSquare className="w-4 h-4 text-emerald-600" />
+                <span>Customer Inquiries</span>
+              </h2>
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                Pre-booking inquiries & order coordination
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
+              {conversations.length === 0 ? (
+                <div className="text-center py-12 px-4 space-y-2">
+                  <MessageSquare className="w-8 h-8 text-gray-300 mx-auto" />
+                  <p className="text-xs font-bold text-gray-600">No messages yet</p>
+                  <p className="text-[11px] text-gray-400">
+                    When customers ask about your products, their messages will appear here.
+                  </p>
+                </div>
+              ) : (
+                conversations.map((conv) => {
+                  const isSelected = selectedConv?.id === conv.id;
+                  const images = parseProductImages(conv.product_images);
+                  const prodThumb = images[0] || 'https://placehold.co/100x100?text=Gear';
+                  const unread = parseInt(conv.unread_vendor_count, 10) || 0;
+
+                  return (
+                    <div
+                      key={conv.id}
+                      onClick={() => handleSelectConversation(conv)}
+                      className={`p-3 cursor-pointer transition flex items-start gap-2.5 ${
+                        isSelected
+                          ? 'bg-emerald-50/70 border-l-4 border-emerald-600'
+                          : 'hover:bg-gray-100/70'
+                      }`}
+                    >
+                      <img
+                        src={prodThumb}
+                        alt="Product"
+                        className="w-10 h-10 rounded-lg object-cover bg-gray-200 flex-shrink-0 border border-gray-200"
+                      />
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <h4 className="text-xs font-bold text-gray-900 truncate">
+                            {conv.customer_name}
+                          </h4>
+                          <span className="text-[10px] text-gray-400 flex-shrink-0">
+                            {new Date(conv.last_message_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                        </div>
+
+                        <p className="text-[11px] font-semibold text-emerald-800 truncate">
+                          {conv.product_title || 'General Equipment'}
+                        </p>
+
+                        <p className="text-[11px] text-gray-500 truncate mt-0.5">
+                          {conv.last_message_text || 'Started a new inquiry...'}
+                        </p>
+                      </div>
+
+                      {unread > 0 && (
+                        <span className="w-5 h-5 bg-rose-500 text-white rounded-full text-[10px] font-black flex items-center justify-center flex-shrink-0">
+                          {unread}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Right Pane: Active Chat Window */}
+          <div className="lg:col-span-8 flex flex-col flex-1 min-h-[420px] lg:h-full bg-white min-w-0">
+            {selectedConv ? (
+              <>
+                {/* Chat Header */}
+                <div className="p-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between flex-shrink-0">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="p-1.5 bg-emerald-100 text-emerald-800 rounded-lg flex-shrink-0">
+                      <User className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="text-xs font-bold text-gray-900 flex items-center gap-1.5 truncate">
+                        <span className="truncate">{selectedConv.customer_name}</span>
+                        {selectedConv.order_status && (
+                          <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full text-[10px] font-extrabold flex-shrink-0">
+                            {selectedConv.order_status}
+                          </span>
+                        )}
+                      </h3>
+                      <p className="text-[10px] text-gray-500 truncate">
+                        Regarding: <b>{selectedConv.product_title}</b>
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Disintermediation Guard Notice */}
+                  <div className="hidden sm:flex items-center gap-1.5 text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200 flex-shrink-0">
+                    <Shield className="w-3.5 h-3.5 flex-shrink-0" />
+                    <span>Contact masking active</span>
+                  </div>
+                </div>
+
+                {/* Message Stream (Scrollable Y) */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50/40">
+                  {chatLoading ? (
+                    <div className="flex items-center justify-center h-full">
+                      <RefreshCw className="w-6 h-6 text-emerald-600 animate-spin" />
+                    </div>
+                  ) : messages.length === 0 ? (
+                    <div className="text-center py-16 text-gray-400 space-y-1">
+                      <Clock className="w-8 h-8 mx-auto text-gray-300" />
+                      <p className="text-xs font-semibold">No messages in this conversation yet.</p>
+                      <p className="text-[10px]">
+                        Send a message to respond to this customer's inquiry.
+                      </p>
+                    </div>
+                  ) : (
+                    messages.map((msg) => {
+                      const isMe = msg.sender_id === user.id;
+
+                      return (
+                        <div
+                          key={msg.id}
+                          className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
+                        >
+                          <div
+                            className={`max-w-[85%] sm:max-w-[75%] rounded-2xl px-3.5 py-2 text-xs shadow-sm break-words ${
+                              isMe
+                                ? 'bg-emerald-600 text-white rounded-br-none'
+                                : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none'
+                            }`}
+                          >
+                            <p className="leading-relaxed whitespace-pre-wrap">
+                              {msg.message_text}
+                            </p>
+                          </div>
+                          <span className="text-[9px] text-gray-400 px-1 mt-0.5">
+                            {new Date(msg.created_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                        </div>
+                      );
+                    })
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+
+                {/* Chat Input Bar */}
+                <form
+                  onSubmit={handleSendMessage}
+                  className="p-2.5 border-t border-gray-200 bg-white flex items-center gap-2 flex-shrink-0"
+                >
+                  <input
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    placeholder="Type a reply to this customer..."
+                    className="flex-1 text-xs p-2.5 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!chatInput.trim() || sendingMessage}
+                    className="p-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-sm transition disabled:opacity-50 flex items-center justify-center flex-shrink-0"
+                  >
+                    <Send className="w-4 h-4" />
+                  </button>
+                </form>
+              </>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-2 p-8 text-center">
+                <MessageSquare className="w-12 h-12 text-gray-200" />
+                <h3 className="text-sm font-bold text-gray-700">No conversation selected</h3>
+                <p className="text-xs text-gray-400 max-w-sm">
+                  Select a customer thread from the left pane to view inquiry details and reply.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: ADD / EDIT PRODUCT[cite: 7] */}
       {showProductModal && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white max-w-2xl w-full rounded-xl shadow-xl border border-gray-200 p-6 space-y-4 my-8">
@@ -637,7 +1000,6 @@ const VendorDashboard = () => {
                 />
               </div>
 
-              {/* Tier Pricing Section */}
               <div className="bg-gray-50 p-3 rounded-lg border border-gray-200 space-y-2">
                 <span className="block text-xs font-bold text-gray-800">
                   Daily Rental Tiers (Rule: 1–4d Rate ≥ 5–9d Rate ≥ 10+d Rate)
@@ -685,7 +1047,6 @@ const VendorDashboard = () => {
                 </div>
               </div>
 
-              {/* Deposit & Late Fees */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                 <div>
                   <label className="block text-[11px] text-gray-600 font-medium">Verified Deposit</label>
@@ -755,17 +1116,14 @@ const VendorDashboard = () => {
                   className="w-full text-xs p-2 border border-gray-300 rounded focus:ring-emerald-500"
                   placeholder="e.g. 200"
                 />
-                <span className="text-[10px] text-gray-400">Deducted from customer deposit if cancelled</span>
+                <span className="text-[10px] text-gray-400">Deducted from customer deposit if cancelled[cite: 7]</span>
               </div>
 
-
-              {/* Multi-Image Gallery Manager (1 to 6 images) */}
               <div>
                 <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Product Images (Min 1, Max 6 total)
+                  Product Images (Min 1, Max 6 total)[cite: 7]
                 </label>
 
-                {/* Thumbnails preview */}
                 <div className="flex flex-wrap gap-2 mb-2">
                   {existingImages.map((url, idx) => (
                     <div key={`exist-${idx}`} className="relative w-16 h-16 rounded border overflow-hidden">
@@ -826,7 +1184,7 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* MODAL: ADD CATEGORY */}
+      {/* MODAL: ADD CATEGORY[cite: 7] */}
       {showCategoryModal && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white max-w-sm w-full rounded-xl shadow-xl border border-gray-200 p-5 space-y-4">
@@ -868,7 +1226,7 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* MODAL: RETURN INSPECTION & SETTLEMENT */}
+      {/* MODAL: RETURN INSPECTION & SETTLEMENT[cite: 7] */}
       {inspectingOrder && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white max-w-md w-full rounded-xl shadow-xl border border-gray-200 p-6 space-y-4">

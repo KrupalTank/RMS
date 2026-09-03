@@ -8,6 +8,7 @@ import { io } from 'socket.io-client';
 import {
   ShoppingBag,
   ShoppingCart,
+  MessageSquare,
   User,
   LogOut,
   ShieldCheck,
@@ -22,6 +23,38 @@ const Navbar = () => {
   const navigate = useNavigate();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [loyaltyInfo, setLoyaltyInfo] = useState({ couponsCount: 0, streak: 0 });
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
+
+  const fetchUnreadChats = async () => {
+    if (!user) return;
+    try {
+      const res = await api.get('/chat/myConversations');
+      if (res.data.success) {
+        const isVendor = user.role === 'vendor';
+        const count = (res.data.conversations || []).reduce((acc, c) => {
+          return acc + (isVendor ? (c.unread_vendor_count || 0) : (c.unread_customer_count || 0));
+        }, 0);
+        setUnreadChatCount(count);
+      }
+    } catch (err) {
+      // Silent fallback
+    }
+  };
+
+  useEffect(() => {
+    fetchUnreadChats();
+
+    if (user) {
+      const socket = io('http://localhost:5000', { withCredentials: true });
+      socket.emit('join_user_room', user.id);
+
+      socket.on('INBOX_UPDATED', () => {
+        fetchUnreadChats();
+      });
+
+      return () => socket.disconnect();
+    }
+  }, [user]);
 
   const fetchLoyalty = async () => {
     if (user && user.role === 'customer') {
@@ -131,6 +164,22 @@ const Navbar = () => {
                     >
                       <Store className="w-4 h-4" />
                       <span>Vendor Hub</span>
+                    </Link>
+                  )}
+
+                  {user.role === 'vendor' && (
+                    <Link
+                      to="/vendor/dashboard"
+                      onClick={() => {/* switches to messages tab */}}
+                      className="relative p-1.5 text-gray-600 hover:text-emerald-600 rounded-lg hover:bg-gray-100 transition"
+                      title="Customer Inquiries"
+                    >
+                      <MessageSquare className="w-5 h-5" />
+                      {unreadChatCount > 0 && (
+                        <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center animate-pulse">
+                          {unreadChatCount}
+                        </span>
+                      )}
                     </Link>
                   )}
 
