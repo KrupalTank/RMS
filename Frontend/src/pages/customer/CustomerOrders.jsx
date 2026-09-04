@@ -19,6 +19,10 @@ import {
   X,
   Tag,
   MessageSquare,
+  KeyRound,
+  Copy,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 const CustomerOrders = () => {
@@ -27,6 +31,8 @@ const CustomerOrders = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionLoadingId, setActionLoadingId] = useState(null);
+
+  const [visibleOtps, setVisibleOtps] = useState({});
 
   // Review Modal State
   const [activeReviewOrder, setActiveReviewOrder] = useState(null);
@@ -284,6 +290,30 @@ const CustomerOrders = () => {
                     <span className="text-xs font-bold text-gray-500">
                       Order #{order.id} (Group #{order.group_id})
                     </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={async () => {
+                          try {
+                            const response = await api.get(`/user/downloadAgreement/${order.group_id}`, {
+                              responseType: 'blob',
+                            });
+                            const url = window.URL.createObjectURL(new Blob([response.data]));
+                            const link = document.createElement('a');
+                            link.href = url;
+                            link.setAttribute('download', `Rental_Agreement_Group_${order.group_id}.pdf`);
+                            document.body.appendChild(link);
+                            link.click();
+                            link.remove();
+                          } catch (err) {
+                            alert('Failed to download agreement.');
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded border border-indigo-200 transition"
+                        title="Download Official Rental Agreement PDF"
+                      >
+                        📄 Rental Agreement
+                      </button>
+                    </div>
                     <span className="text-[11px] text-gray-400">
                       Booked on: {new Date(order.created_at).toLocaleDateString()}
                     </span>
@@ -362,24 +392,52 @@ const CustomerOrders = () => {
                       <span>Chat Vendor</span>
                     </button>
 
+                    {/* Handover Security PIN Card for Locked Orders */}
                     {order.status === 'Lock' && (
-                      <>
-                        <button
-                          onClick={() => handleConfirmHandover(order.id)}
-                          disabled={actionLoadingId === order.id}
-                          className="w-full py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition disabled:opacity-50 flex items-center justify-center gap-1.5"
-                        >
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>{actionLoadingId === order.id ? 'Confirming...' : 'I Received This Item'}</span>
-                        </button>
+                      <div className="w-full bg-amber-50/80 border border-amber-300 rounded-xl p-3 space-y-2 text-center">
+                        <div className="flex items-center justify-between text-amber-900 text-[11px] font-bold">
+                          <span className="flex items-center gap-1">
+                            <KeyRound className="w-3.5 h-3.5 text-amber-600" /> Handover PIN
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setVisibleOtps((prev) => ({ ...prev, [order.id]: !prev[order.id] }))
+                            }
+                            className="text-amber-700 hover:text-amber-900 text-[10px] underline"
+                          >
+                            {visibleOtps[order.id] ? 'Hide' : 'Reveal'}
+                          </button>
+                        </div>
+
+                        <div className="bg-white border border-amber-200 py-1.5 px-3 rounded-lg flex items-center justify-center gap-2">
+                          <span className="font-mono text-base font-black tracking-widest text-gray-900">
+                            {visibleOtps[order.id] ? order.handover_otp : '••••••'}
+                          </span>
+                          {visibleOtps[order.id] && (
+                            <button
+                              onClick={() => {
+                                navigator.clipboard.writeText(order.handover_otp);
+                                alert('Handover PIN copied to clipboard!');
+                              }}
+                              className="text-gray-400 hover:text-gray-600"
+                              title="Copy PIN"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-amber-700 leading-tight">
+                          Provide this PIN to the vendor upon inspecting and receiving the gear.
+                        </p>
 
                         <button
                           onClick={() => setCancellingOrder(order)}
-                          className="w-full py-1.5 px-3 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-semibold transition text-center"
+                          className="w-full py-1 px-2 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded text-[11px] font-semibold transition text-center"
                         >
                           Cancel Booking
                         </button>
-                      </>
+                      </div>
                     )}
 
                     {['With Customer', 'Returned'].includes(order.status) && (

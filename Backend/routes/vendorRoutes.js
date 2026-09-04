@@ -56,5 +56,6 @@ router.post('/changeOrderStatus', validateRequired(['order_id', 'status']), vend
 router.get('/myProfile', userController.getMyProfile);
 router.put('/myProfile', userController.updateMyProfile);
 
+router.post('/verifyHandoverOtp', validateRequired(['order_id', 'otp']), vendorController.verifyHandoverOtp );
 
 module.exports = router;

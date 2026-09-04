@@ -26,12 +26,15 @@ import {
   ChevronLeft,
   ChevronRight,
   Sparkles,
+  Calendar,
 } from 'lucide-react';
 
 import { io } from 'socket.io-client';
 import ChatModal from '../../components/ChatModal';
 
 const ProductDetail = () => {
+  const [availabilityDays, setAvailabilityDays] = useState([]);
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
 
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [activeConversation, setActiveConversation] = useState(null);
@@ -56,17 +59,19 @@ const ProductDetail = () => {
   const [actionLoading, setActionLoading] = useState(false);
   const [status, setStatus] = useState({ success: '', error: '' });
 
-  // Fetch product data & similar recommendations
+  // Fetch product data & similar recommendations & availability
   useEffect(() => {
     const fetchProductAndRecommendations = async () => {
       setLoading(true);
+      setAvailabilityLoading(true);
       setActiveImageIndex(0);
       setStatus({ success: '', error: '' });
 
       try {
-        const [prodRes, similarRes] = await Promise.all([
+        const [prodRes, similarRes, availRes] = await Promise.all([
           api.get(`/user/getProduct/${id}`),
           api.get(`/user/recommendations/similar/${id}?limit=6`),
+          api.get(`/user/productAvailability/${id}`).catch(() => ({ data: { success: false, days: [] } })),
         ]);
 
         if (prodRes.data.success) {
@@ -77,6 +82,10 @@ const ProductDetail = () => {
         if (similarRes.data.success) {
           setSimilarProducts(similarRes.data.products || []);
         }
+
+        if (availRes.data?.success) {
+          setAvailabilityDays(availRes.data.days || []);
+        }
       } catch (err) {
         setStatus({
           success: '',
@@ -84,6 +93,7 @@ const ProductDetail = () => {
         });
       } finally {
         setLoading(false);
+        setAvailabilityLoading(false);
       }
     };
 
@@ -498,6 +508,49 @@ const ProductDetail = () => {
                   </div>
                 </div>
 
+                {/* 60-Day Availability Quick-View Strip */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-bold text-gray-700 flex items-center gap-1">
+                      <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Upcoming 60-Day Availability</span>
+                    </span>
+                    <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span> Available
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-rose-500 inline-block"></span> Booked Out
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-1 overflow-x-auto pb-1.5 pt-0.5 scrollbar-thin">
+                    {availabilityDays.map((day) => {
+                      const dateObj = new Date(day.date);
+                      const isSoldOut = day.is_sold_out;
+                      const formattedDay = dateObj.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+
+                      return (
+                        <div
+                          key={day.date}
+                          title={`${day.date}: ${day.remaining_stock} unit(s) remaining`}
+                          className={`flex-shrink-0 text-center px-2 py-1 rounded-lg border text-[10px] select-none ${
+                            isSoldOut
+                              ? 'bg-rose-50 border-rose-200 text-rose-700 opacity-60'
+                              : 'bg-white border-gray-200 text-gray-700 hover:border-blue-400'
+                          }`}
+                        >
+                          <span className="block font-semibold">{formattedDay}</span>
+                          <span className={`block font-bold text-[9px] ${isSoldOut ? 'text-rose-600' : 'text-emerald-600'}`}>
+                            {isSoldOut ? 'Full' : `${day.remaining_stock} left`}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {/* Dynamic Quotation Box */}
                 {totalDays > 0 ? (
                   <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 space-y-2.5 text-xs">
@@ -692,8 +745,3 @@ const ProductDetail = () => {
 };
 
 export default ProductDetail;
-
-
-/*
-What is being added:API Call: Automatically fetches recommendations from GET /api/v1/rms/user/recommendations/similar/:productId when the product details load.  Horizontal Carousel: Renders a "Similar Equipment You Might Also Like" section directly below the Customer Reviews section.  Smooth Scroll Controls: Includes scroll arrows (ChevronLeft, ChevronRight) matching the styling in Catalog.jsx.  Reusing ProductCard: Directly uses the verified ProductCard component so city proximity badges, images, and pricing details stay consistent.
-*/

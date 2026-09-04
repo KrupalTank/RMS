@@ -34,6 +34,8 @@ router.get('/getProducts', userController.getProducts);
 router.get('/getProducts/:category', userController.getProductsByCategory);
 router.get('/products/:productName', userController.searchProducts);
 router.get('/getProduct/:id', userController.getProductById);
+// Catalog Exploration & Availability
+router.get('/productAvailability/:productId', userController.getProductAvailability);
 
 // Cart
 router.post('/addToCart', validateRequired(['product_id', 'quantity', 'start_date', 'end_date']), cartController.addToCart);
@@ -42,6 +44,8 @@ router.delete('/removeItemFromCart/:id', cartController.removeItemFromCart);
 
 // Orders & Handover
 router.get('/getOrders', orderController.getCustomerOrders);
+router.get('/downloadAgreement/:groupId', orderController.downloadRentalAgreement);
+
 router.post('/changeOrderStatus', validateRequired(['order_id']), orderController.confirmOrderReceived);
 router.post('/cancelOrder', validateRequired(['order_id']), orderController.cancelOrder);
 // Reviews

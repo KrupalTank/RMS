@@ -1,6 +1,7 @@
 // controllers/orderController.js
 const pool = require('../config/db');
 const { sendCustomerCancellationEmail, sendVendorCancellationEmail } = require('../services/emailService');
+const { generateRentalAgreementPDF } = require('../utils/pdfGenerator');
 
 // GET /api/v1/rms/user/getOrders
 exports.getCustomerOrders = async (req, res) => {
@@ -218,5 +219,63 @@ exports.cancelOrder = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to cancel order.' });
   } finally {
     client.release();
+  }
+};
+
+// GET /api/v1/rms/user/downloadAgreement/:groupId
+exports.downloadRentalAgreement = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userRole = req.user.role;
+    const { groupId } = req.params;
+
+    // 1. Fetch group orders and check permissions (Customer or Vendor involved)
+    const subOrdersRes = await pool.query(
+      `SELECT o.*, p.title AS product_title, 
+              u.full_name AS vendor_name, u.city AS vendor_city, u.phone AS vendor_phone, u.address AS vendor_address
+       FROM orders o
+       JOIN products p ON o.product_id = p.id
+       JOIN users u ON o.vendor_id = u.id
+       WHERE o.group_id = $1
+       ORDER BY o.id ASC`,
+      [groupId]
+    );
+
+    if (subOrdersRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Rental agreement not found for this group booking.' });
+    }
+
+    const subOrders = subOrdersRes.rows;
+    const customerId = subOrders[0].customer_id;
+
+    // Check authorization: caller must be customer, one of the vendors, or admin
+    const isCustomer = userId === customerId;
+    const isVendor = subOrders.some((o) => o.vendor_id === userId);
+    const isAdmin = userRole === 'admin';
+
+    if (!isCustomer && !isVendor && !isAdmin) {
+      return res.status(403).json({ success: false, message: 'Unauthorized to download this rental agreement.' });
+    }
+
+    // 2. Fetch Customer Details
+    const customerRes = await pool.query(
+      'SELECT id, full_name, email, phone, city, kyc_status FROM users WHERE id = $1',
+      [customerId]
+    );
+    const customer = customerRes.rows[0];
+
+    // 3. Generate PDF Stream
+    const pdfBuffer = await generateRentalAgreementPDF({
+      customer,
+      parentOrder: { group_id: groupId },
+      subOrders,
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=Rental_Agreement_Group_${groupId}.pdf`);
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error('Download Rental Agreement Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate rental agreement PDF.' });
   }
 };

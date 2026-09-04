@@ -198,6 +198,7 @@ exports.createCheckoutOrder = async (req, res) => {
 exports.verifyPayment = async (req, res) => {
   const client = await pool.connect();
   try {
+    const customerId = req.user.id;
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, group_id } = req.body;
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !group_id) {
@@ -217,7 +218,7 @@ exports.verifyPayment = async (req, res) => {
     // 2. Fetch User & Current Block Status
     const userRes = await client.query(
       'SELECT full_name, is_blocked, email, city FROM users WHERE id = $1',
-      [req.user.id]
+      [customerId]
     );
 
     if (userRes.rows.length === 0) {
@@ -276,7 +277,7 @@ exports.verifyPayment = async (req, res) => {
         cancelledOrders.rows.forEach((order) => {
           io.emit('PAYOUT_GENERATED', {
             orderId: order.id,
-            customerId: req.user.id,
+            customerId,
             type: 'full_refund',
           });
         });
@@ -301,17 +302,30 @@ exports.verifyPayment = async (req, res) => {
     }
 
     // 4. CASE B: Standard Active User Flow
-    // Update orders from 'Pending_Payment' to 'Lock'
-    const updatedOrders = await client.query(
-      `UPDATE orders 
-       SET status = 'Lock' 
-       WHERE group_id = $1 AND status = 'Pending_Payment' 
-       RETURNING *`,
+    // Fetch all pending sub-orders under this group
+    const pendingOrdersRes = await client.query(
+      `SELECT id FROM orders 
+       WHERE group_id = $1 AND status = 'Pending_Payment'`,
       [group_id]
     );
 
-    // Redeem coupon permanently upon successful payment lock
-    for (const ord of updatedOrders.rows) {
+    const updatedOrders = [];
+    for (const pending of pendingOrdersRes.rows) {
+      // Cryptographically secure 6-digit PIN
+      const otp = crypto.randomInt(100000, 1000000).toString();
+      const updateSingle = await client.query(
+        `UPDATE orders 
+         SET status = 'Lock',
+             handover_otp = $1
+         WHERE id = $2
+         RETURNING *`,
+        [otp, pending.id]
+      );
+      updatedOrders.push(updateSingle.rows[0]);
+    }
+
+    // Redeem coupons permanently upon successful payment lock
+    for (const ord of updatedOrders) {
       if (ord.applied_coupon_id) {
         await client.query(
           `UPDATE coupons 
@@ -324,11 +338,14 @@ exports.verifyPayment = async (req, res) => {
       }
     }
 
+    // Clear the customer's cart now that orders are confirmed
+    await client.query('DELETE FROM cart WHERE user_id = $1', [customerId]);
+
     await client.query('COMMIT');
 
-    // Emit real-time WebSocket alert to vendors
+    // 5. Emit real-time WebSocket alerts to vendors (Fixed: updatedOrders is an array)
     if (io) {
-      updatedOrders.rows.forEach((order) => {
+      updatedOrders.forEach((order) => {
         io.emit('ORDER_LOCKED', {
           orderId: order.id,
           vendorId: order.vendor_id,
@@ -338,7 +355,7 @@ exports.verifyPayment = async (req, res) => {
       });
     }
 
-    // Fetch sub-order details for booking confirmation invoice email
+    // 6. Fetch sub-order details for booking confirmation invoice email
     const subOrdersQuery = await pool.query(
       `SELECT o.*, p.title AS product_title, u.full_name AS vendor_name
        FROM orders o
@@ -357,8 +374,8 @@ exports.verifyPayment = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: 'Payment verified successfully. Orders locked for pickup.',
-      orders: updatedOrders.rows,
+      message: 'Payment verified successfully. Orders locked for pickup with Handover PIN.',
+      orders: updatedOrders, // Fixed: returning array directly
     });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});

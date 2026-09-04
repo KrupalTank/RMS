@@ -362,3 +362,62 @@ exports.getMyCoupons = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to fetch coupons.' });
   }
 };
+
+// GET /api/v1/rms/user/productAvailability/:productId
+// Generates a 60-day rolling calendar showing booked quantities and unavailable dates
+exports.getProductAvailability = async (req, res) => {
+  try {
+    const { productId } = req.params;
+
+    // 1. Fetch product's total inventory
+    const productRes = await pool.query(
+      'SELECT id, total_quantity FROM products WHERE id = $1',
+      [productId]
+    );
+
+    if (productRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Product not found.' });
+    }
+
+    const totalStock = parseInt(productRes.rows[0].total_quantity, 10);
+
+    // 2. Query daily booked count across the next 60 days
+    // Considers locked bookings, active rentals, and active checkout carts
+    const availabilityQuery = `
+      WITH calendar_dates AS (
+        SELECT generate_series(
+          CURRENT_DATE,
+          CURRENT_DATE + INTERVAL '60 days',
+          INTERVAL '1 day'
+        )::DATE AS calendar_date
+      ),
+      booked_counts AS (
+        SELECT cd.calendar_date,
+               COALESCE(SUM(o.quantity), 0)::INT AS booked_quantity
+        FROM calendar_dates cd
+        LEFT JOIN orders o ON o.product_id = $1
+          AND o.status IN ('Lock', 'With Customer')
+          AND cd.calendar_date >= o.start_date::DATE
+          AND cd.calendar_date <= o.end_date::DATE
+        GROUP BY cd.calendar_date
+      )
+      SELECT TO_CHAR(bc.calendar_date, 'YYYY-MM-DD') AS date,
+             bc.booked_quantity,
+             GREATEST(0, $2 - bc.booked_quantity) AS remaining_stock,
+             (bc.booked_quantity >= $2) AS is_sold_out
+      FROM booked_counts bc
+      ORDER BY bc.calendar_date ASC;
+    `;
+
+    const result = await pool.query(availabilityQuery, [productId, totalStock]);
+
+    return res.status(200).json({
+      success: true,
+      total_stock: totalStock,
+      days: result.rows,
+    });
+  } catch (error) {
+    console.error('Get Product Availability Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to calculate product availability.' });
+  }
+};

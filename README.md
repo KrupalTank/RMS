@@ -241,3 +241,72 @@ As the marketplace expanded, direct vendor-customer coordination became essentia
    * **`CustomerOrders.jsx`:** Order-bound "Chat Vendor" triggers embedded directly into active booking cards.
    * **`ChatModal.jsx`:** Floating, collapsible messenger for customers featuring auto-scrolling message streams and expiration notices.
    * **`VendorDashboard.jsx`:** Two-pane responsive workspace with unread indicators, gear context badges, and responsive half-screen scroll containers.
+
+
+
+🏷️ Version 5.0.0 — Physical Handshake Verification, Equipment Availability Engine & Binding PDF Legal Contracts
+📌 Overview & Motivation
+While earlier versions established marketplace escrow security, duration tier discounts, treasury payouts, and private messaging, real-world physical operations presented critical friction points:
+
+Physical Handover Vulnerability: Customers could unilaterally claim equipment was received or missing without proof of physical presence.
+
+Booking Collision Blindness: Users selected rental dates blindly on product pages without knowing if single-stock items were already booked.
+
+Legal & Custody Exposure: Neither vendors nor customers had an official, enforceable custody agreement detailing item liability, replacement deposits, late penalty ladders, and cancellation terms during transit or possession.
+
+Version 5.0.0 resolves these operational gaps by establishing cryptographic handshake OTP verification, a rolling 60-day availability calculation engine, and automated generation of binding PDF Rental Agreements.
+
+🚨 Problems Encountered & Architectural Solutions
+
+Challenge / Problem,Root Cause,Engineering Solution
+Unilateral Handover Claims & Repudiation,"Customers confirmed receipt via a simple client button click (I Received This Item), allowing false claims of delivery or premature status changes without physical inspection.","Two-Way Handshake OTP Verification: Once orders enter Lock status upon payment, a secure 6-digit numeric PIN (handover_otp) is generated and visible exclusively on the customer's booking card. The vendor physically verifies the item with the customer, receives the code, and inputs it on their dashboard to transition the booking to With Customer."
+Double-Booking & Checkout Drop-offs,"The catalog allowed selection of any future dates, only throwing inventory errors at cart addition or Razorpay checkout initialization.","60-Day Rolling Availability Engine: Implemented a calendar generation query using PostgreSQL generate_series and window overlap calculations (check_product_availability). It aggregates active orders (Lock, With Customer) over the next 60 days, feeding a visual availability ribbon on ProductDetail.jsx showing exact units remaining and sold-out dates."
+PDF Text Collision & Coordinate Bleed,"Long product titles, multi-item table schedules, and legal policy notices overlapped vertically and horizontally in standard PDFKit renders, creating unreadable, garbled text.","Fixed Bounding Box Math & Dynamic Offsets: Refactored pdfGenerator.js with explicit coordinate partitions: strict column widths (44 to 542 pt grid), single-line title truncation with ellipsis, dedicated ASCII string sanitization (preventing character encoding corruptions), and dynamic vertical cursor tracking (currY) with automated page breaks."
+Payment Verification Controller Crashes,"When transforming orders to Lock status in paymentController.js, iterating over array structures via .rows triggered runtime TypeError exceptions, risking rollback after payment capture.","Array Handling & Automatic Cart Cleanup: Standardized array responses in verifyPayment, ensured consistent WebSocket notifications (ORDER_LOCKED), and added atomic post-payment cart purging (DELETE FROM cart WHERE user_id = $1)."
+
+
+⚙️ Technical Implementation Details
+Database Schema & Indexing (PostgreSQL):
+
+Added handover_otp VARCHAR(6) and handover_verified_at TIMESTAMP WITH TIME ZONE to the orders table.
+
+Created composite B-tree index idx_orders_handover_otp on (id, handover_otp) for O(1) OTP validation.
+
+Added composite index idx_orders_active_dates on (product_id, start_date, end_date, status) to accelerate 60-day availability calendar lookups.
+
+Backend Services & API Endpoints (Express.js):
+
+POST /api/v1/rms/payment/verifyPayment: Generates a cryptographically random 6-digit PIN via crypto.randomInt(100000, 1000000) and links it to locked sub-orders.
+
+POST /api/v1/rms/vendor/verifyHandoverOtp: Atomically validates customer-provided OTPs under row-level locks (SELECT ... FOR UPDATE), transitions status to With Customer, records timestamps, and fires database payout triggers.
+
+GET /api/v1/rms/user/productAvailability/:productId: Runs an automated 60-day availability aggregation returning date-by-date remaining inventory counts and sold-out flags.
+
+GET /api/v1/rms/user/downloadAgreement/:groupId: Streams a digitally certified, escrow-backed Equipment Rental Agreement & Custody Certificate PDF to authorized customers and vendors.
+
+Legal Document Generation (PDFKit):
+
+Parties & Custody Section: Lessee details, verified city, KYC status, and Razorpay escrow custody references.
+
+Schedule of Rented Equipment: Structured table mapping equipment titles, vendors, rental duration, daily rates, security escrow deposits, daily late fee schedules, and maximum grace return days.
+
+Cancellation Schedule: Per-item fee deductions versus free cancellation policies based on vendor item settings.
+
+Binding Terms & Recovery Covenants: Handover PIN verification clauses, strict return schedules, equipment condition audit stipulations, and automatic loss/forfeiture terms.
+
+Frontend Workspaces (React + Tailwind CSS):
+
+ProductDetail.jsx: Horizontal 60-day quick-view availability strip displaying day-by-day remaining stock badges (Full vs X left).
+
+CustomerOrders.jsx: Replaced the legacy confirm button with a Handover Security PIN card featuring show/hide toggles, clipboard copying, and a "Rental Agreement" PDF download button.
+
+VendorDashboard.jsx: Introduced a "Handover Equipment" modal allowing vendors to submit customer PINs directly from the orders management panel alongside agreement PDF downloads.
+
+#### 🚨 Problems Encountered & Architectural Solutions
+
+| Challenge / Problem | Root Cause | Engineering Solution |
+| :--- | :--- | :--- |
+| **Unilateral Handover Claims & Repudiation** | Customers confirmed receipt via a simple client button click (`I Received This Item`), allowing false claims of delivery or premature status changes without physical inspection. | **Two-Way Handshake OTP Verification:** Once orders enter `Lock` status upon payment, a secure 6-digit numeric PIN (`handover_otp`) is generated and visible exclusively on the customer's booking card. The vendor physically verifies the item with the customer, receives the code, and inputs it on their dashboard to transition the booking to `With Customer`. |
+| **Double-Booking & Checkout Drop-offs** | The catalog allowed selection of any future dates, only throwing inventory errors at cart addition or Razorpay checkout initialization. | **60-Day Rolling Availability Engine:** Implemented a calendar generation query using PostgreSQL `generate_series` and window overlap calculations (`check_product_availability`). It aggregates active orders (`Lock`, `With Customer`) over the next 60 days, feeding a visual availability ribbon on `ProductDetail.jsx` showing exact units remaining and sold-out dates. |
+| **PDF Text Collision & Coordinate Bleed** | Long product titles, multi-item table schedules, and legal policy notices overlapped vertically and horizontally in standard PDFKit renders, creating unreadable, garbled text. | **Fixed Bounding Box Math & Dynamic Offsets:** Refactored `pdfGenerator.js` with explicit coordinate partitions: strict column widths (44 to 542 pt grid), single-line title truncation with ellipsis, dedicated ASCII string sanitization (preventing character encoding corruptions), and dynamic vertical cursor tracking (`currY`) with automated page breaks. |
+| **Payment Verification Controller Crashes** | When transforming orders to `Lock` status in `paymentController.js`, iterating over array structures via `.rows` triggered runtime `TypeError` exceptions, risking rollback after payment capture. | **Array Handling & Automatic Cart Cleanup:** Standardized array responses in `verifyPayment`, ensured consistent WebSocket notifications (`ORDER_LOCKED`), and added atomic post-payment cart purging (`DELETE FROM cart WHERE user_id = $1`). |

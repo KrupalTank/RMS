@@ -27,6 +27,7 @@ import {
   User,
   Shield,
   Clock,
+  KeyRound,
 } from 'lucide-react';
 
 const VendorDashboard = () => {
@@ -54,6 +55,10 @@ const VendorDashboard = () => {
   const [editingProductId, setEditingProductId] = useState(null);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
+
+  const [handoverModalOrder, setHandoverModalOrder] = useState(null);
+  const [enteredOtp, setEnteredOtp] = useState('');
+  const [verifyingOtp, setVerifyingOtp] = useState(false);
 
   // Product Form State
   const initialFormState = {
@@ -247,6 +252,33 @@ const VendorDashboard = () => {
       }
     } catch (err) {
       alert(err.response?.data?.message || 'Failed to initiate order chat.');
+    }
+  };
+
+  const handleVerifyOtpSubmit = async (e) => {
+    e.preventDefault();
+    if (!enteredOtp || enteredOtp.trim().length !== 6) {
+      alert('Please enter a valid 6-digit numeric PIN.');
+      return;
+    }
+
+    setVerifyingOtp(true);
+    try {
+      const res = await api.post('/vendor/verifyHandoverOtp', {
+        order_id: handoverModalOrder.id,
+        otp: enteredOtp.trim(),
+      });
+
+      if (res.data.success) {
+        setBanner({ success: res.data.message, error: '' });
+        setHandoverModalOrder(null);
+        setEnteredOtp('');
+        fetchData();
+      }
+    } catch (err) {
+      alert(err.response?.data?.message || 'Handover PIN verification failed.');
+    } finally {
+      setVerifyingOtp(false);
     }
   };
 
@@ -679,6 +711,27 @@ const VendorDashboard = () => {
                       <span className="text-xs font-bold text-gray-700">
                         Order #{ord.id} (Group #{ord.group_id})
                       </span>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const response = await api.get(`/user/downloadAgreement/${ord.group_id}`, {
+                              responseType: 'blob',
+                            });
+                            const url = window.URL.createObjectURL(new Blob([response.data]));
+                            const link = document.createElement('a');
+                            link.href = url;
+                            link.setAttribute('download', `Rental_Agreement_Group_${ord.group_id}.pdf`);
+                            document.body.appendChild(link);
+                            link.click();
+                            link.remove();
+                          } catch (err) {
+                            alert('Failed to download agreement.');
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded border border-indigo-200 transition ml-2"
+                      >
+                        📄 Agreement
+                      </button>
                       <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full ${
                         ord.status === 'Lock'
                           ? 'bg-amber-50 text-amber-800 border border-amber-200'
@@ -716,13 +769,26 @@ const VendorDashboard = () => {
                     </button>
 
                     {ord.status === 'Lock' && (
-                      <button
-                        onClick={() => handleCancelOrder(ord.id)}
-                        disabled={orderActionLoading}
-                        className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-semibold rounded-lg border border-red-200 transition"
-                      >
-                        Cancel Booking
-                      </button>
+                      <>
+                        <button
+                          onClick={() => {
+                            setHandoverModalOrder(ord);
+                            setEnteredOtp('');
+                          }}
+                          className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm transition flex items-center gap-1.5"
+                        >
+                          <KeyRound className="w-3.5 h-3.5" />
+                          <span>Handover Equipment</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleCancelOrder(ord.id)}
+                          disabled={orderActionLoading}
+                          className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-semibold rounded-lg border border-red-200 transition"
+                        >
+                          Cancel Booking
+                        </button>
+                      </>
                     )}
 
                     {ord.status === 'With Customer' && (
@@ -1274,6 +1340,74 @@ const VendorDashboard = () => {
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-bold disabled:opacity-50"
                 >
                   {orderActionLoading ? 'Processing Settlement...' : 'Confirm Return & Settle'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: VERIFY HANDOVER OTP */}
+      {handoverModalOrder && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white max-w-sm w-full rounded-2xl shadow-xl border border-gray-100 p-6 space-y-4">
+            <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-emerald-100 text-emerald-800 rounded-lg">
+                  <KeyRound className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-gray-900">Verify Handover</h3>
+                  <p className="text-[11px] text-gray-500">Order #{handoverModalOrder.id}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setHandoverModalOrder(null)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleVerifyOtpSubmit} className="space-y-4">
+              <div className="p-3 bg-gray-50 rounded-xl text-xs text-gray-600 space-y-1 border border-gray-100">
+                <p><b>Product:</b> {handoverModalOrder.product_title}</p>
+                <p><b>Customer:</b> {handoverModalOrder.customer_name}</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">
+                  Enter Customer's 6-Digit PIN:
+                </label>
+                <input
+                  type="text"
+                  maxLength={6}
+                  required
+                  autoFocus
+                  value={enteredOtp}
+                  onChange={(e) => setEnteredOtp(e.target.value.replace(/\D/g, ''))}
+                  placeholder="123456"
+                  className="w-full text-center tracking-widest font-mono text-xl py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none font-bold"
+                />
+                <span className="text-[10px] text-gray-400 block mt-1 text-center">
+                  Ask the customer for the PIN shown on their order card upon handover.
+                </span>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setHandoverModalOrder(null)}
+                  className="px-4 py-2 border rounded-lg text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={enteredOtp.length !== 6 || verifyingOtp}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition disabled:opacity-50"
+                >
+                  {verifyingOtp ? 'Verifying...' : 'Confirm Handover'}
                 </button>
               </div>
             </form>

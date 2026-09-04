@@ -633,3 +633,92 @@ exports.changeOrderStatus = async (req, res) => {
     client.release();
   }
 };
+
+// POST /api/v1/rms/vendor/verifyHandoverOtp
+exports.verifyHandoverOtp = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const vendorId = req.user.id;
+    const { order_id, otp } = req.body;
+
+    if (!order_id || !otp) {
+      return res.status(400).json({ success: false, message: 'Order ID and 6-digit OTP are required.' });
+    }
+
+    await client.query('BEGIN');
+
+    // 1. Lock and fetch order
+    const orderRes = await client.query(
+      'SELECT * FROM orders WHERE id = $1 AND vendor_id = $2 FOR UPDATE',
+      [order_id, vendorId]
+    );
+
+    if (orderRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Order not found or unauthorized.' });
+    }
+
+    const order = orderRes.rows[0];
+
+    if (order.status !== 'Lock') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        success: false,
+        message: `Cannot verify handover. Order status must be 'Lock' (Current: '${order.status}').`,
+      });
+    }
+
+    // 2. Validate OTP
+    if (String(order.handover_otp).trim() !== String(otp).trim()) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid Handover PIN. Please request the current 6-digit code from the customer.',
+      });
+    }
+
+    // 3. Update status to 'With Customer'
+    // NOTE: Database trigger 'trg_handle_order_handover_payout' automatically generates
+    // the rent payout ledger to the vendor and sets payment_status = 'Partial'!
+    const updateRes = await client.query(
+      `UPDATE orders 
+       SET status = 'With Customer',
+           handover_verified_at = CURRENT_TIMESTAMP
+       WHERE id = $1 
+       RETURNING *`,
+      [order_id]
+    );
+
+    await client.query('COMMIT');
+
+    // 4. Emit real-time WebSocket sync
+    const io = req.app.get('socketio');
+    if (io) {
+      const numericOrderId = parseInt(order_id, 10);
+      io.emit('ORDER_STATUS_CHANGED', {
+        orderId: numericOrderId,
+        newStatus: 'With Customer',
+        vendorId: order.vendor_id,
+        customerId: order.customer_id,
+      });
+
+      io.emit('PAYOUT_GENERATED', {
+        orderId: numericOrderId,
+        vendorId: order.vendor_id,
+        type: 'rent_handover',
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Handshake PIN verified successfully. Equipment handed over to customer.',
+      order: updateRes.rows[0],
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Verify Handover OTP Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to verify handover PIN.' });
+  } finally {
+    client.release();
+  }
+};

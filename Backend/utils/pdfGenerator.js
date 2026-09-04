@@ -272,7 +272,209 @@ function generatePayoutSlipPDF({ recipient, payout, orderDetails }) {
   });
 }
 
+/**
+ * Helper to strip non-ASCII / problematic glyphs that break standard PDF fonts
+ */
+const sanitizeText = (str) => {
+  if (!str) return '';
+  return String(str)
+    .replace(/[^\x20-\x7E]/g, '') // Strips inverted exclamations (¡) and non-ASCII artifacts
+    .trim();
+};
+
+/**
+ * 3. Generates Legally Binding Equipment Rental Agreement & Custody Certificate PDF
+ * Strict coordinate layout with absolute non-overlapping column bounds.
+ */
+function generateRentalAgreementPDF({ customer, parentOrder, subOrders }) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 36, size: 'A4', autoFirstPage: true });
+    const buffers = [];
+
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => resolve(Buffer.concat(buffers)));
+    doc.on('error', reject);
+
+    // --- COLOR PALETTE ---
+    const primaryNavy = '#0F172A';   // Slate 900
+    const accentIndigo = '#4338CA';  // Indigo 700
+    const textDark = '#1E293B';      // Slate 800
+    const textMuted = '#475569';     // Slate 600
+    const borderGray = '#CBD5E1';    // Slate 300
+    const bgLight = '#F8FAFC';       // Slate 50
+
+    // --- 1. HEADER BLOCK ---
+    doc.rect(36, 36, 523, 62).fill(primaryNavy);
+
+    // Left Title Block
+    doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(11)
+      .text('EQUIPMENT RENTAL AGREEMENT', 48, 46, { width: 290, lineBreak: false })
+      .fontSize(9.5)
+      .text('& CUSTODY CERTIFICATE', 48, 60, { width: 290, lineBreak: false });
+
+    doc.fillColor('#93C5FD').font('Helvetica').fontSize(8)
+      .text('Official Binding Agreement • Escrow Backed', 48, 74, { width: 290, lineBreak: false });
+
+    // Right Metadata Block
+    const generatedDate = new Date().toLocaleDateString('en-IN', {
+      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+    doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(8)
+      .text(`AGREEMENT ID: RMS-AGR-${parentOrder.group_id}`, 345, 46, { width: 200, align: 'right' });
+    doc.fillColor('#CBD5E1').font('Helvetica').fontSize(7.5)
+      .text(`ISSUED: ${generatedDate}`, 345, 60, { width: 200, align: 'right' })
+      .text(`GROUP BOOKING: #${parentOrder.group_id}`, 345, 72, { width: 200, align: 'right' });
+
+    let currY = 108;
+
+    // --- 2. CONTRACTING PARTIES CARD ---
+    const partiesCardHeight = 72;
+    doc.rect(36, currY, 523, partiesCardHeight).fillAndStroke(bgLight, borderGray);
+
+    // Left Column: Lessee / Customer Details
+    doc.fillColor(accentIndigo).font('Helvetica-Bold').fontSize(8).text('LESSEE / CUSTOMER DETAILS', 48, currY + 8);
+    doc.fillColor(textDark).font('Helvetica-Bold').fontSize(9).text(sanitizeText(customer.full_name) || 'Registered Customer', 48, currY + 20, { width: 250, lineBreak: false, ellipsis: true });
+    doc.fillColor(textMuted).font('Helvetica').fontSize(7.5)
+      .text(`Email: ${sanitizeText(customer.email) || 'N/A'}`, 48, currY + 33, { width: 250, lineBreak: false, ellipsis: true })
+      .text(`City: ${sanitizeText(customer.city) || 'N/A'}  •  KYC Status: ${(customer.kyc_status || 'VERIFIED').toUpperCase()}`, 48, currY + 45, { width: 250, lineBreak: false, ellipsis: true });
+
+    // Right Column: Escrow & Jurisdiction
+    doc.fillColor(accentIndigo).font('Helvetica-Bold').fontSize(8).text('SECURITY & JURISDICTION', 320, currY + 8);
+    doc.fillColor(textMuted).font('Helvetica').fontSize(7.5)
+      .text(`Escrow Custody: Razorpay Treasury Node`, 320, currY + 20)
+      .text(`Settlement Rails: Automated IMPS Clearing`, 320, currY + 33)
+      .text(`Legal Status: ACTIVE BINDING COVENANT`, 320, currY + 45);
+
+    // Ensure 20pt buffer so Section 1 header never collides with this card
+    currY += partiesCardHeight + 20;
+
+    // --- 3. SCHEDULE OF RENTED ASSETS (TABLE) ---
+    doc.fillColor(primaryNavy).font('Helvetica-Bold').fontSize(9).text('1. SCHEDULE OF RENTED EQUIPMENT & CHARGES', 36, currY);
+    currY += 14;
+
+    // Table Header
+    doc.rect(36, currY, 523, 18).fill('#334155');
+    doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(6.5);
+    doc.text('EQUIPMENT & VENDOR', 44, currY + 5, { width: 150 });
+    doc.text('RENTAL WINDOW', 200, currY + 5, { width: 90 });
+    doc.text('QTY', 295, currY + 5, { width: 24, align: 'center' });
+    doc.text('DAILY RENT', 324, currY + 5, { width: 48, align: 'right' });
+    doc.text('ESCROW DEPOSIT', 378, currY + 5, { width: 56, align: 'right' });
+    doc.text('LATE FEE/DAY', 440, currY + 5, { width: 50, align: 'right' });
+    doc.text('MAX LATE', 496, currY + 5, { width: 46, align: 'center' });
+    currY += 18;
+
+    let totalEscrow = 0;
+    let totalRent = 0;
+
+    subOrders.forEach((item, index) => {
+      const rowHeight = 26;
+      const rowBg = index % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
+      doc.rect(36, currY, 523, rowHeight).fillAndStroke(rowBg, '#E2E8F0');
+
+      const start = new Date(item.start_date);
+      const end = new Date(item.end_date);
+      const days = Math.ceil(Math.abs(end - start) / (1000 * 60 * 60 * 24)) + 1;
+      const rentPaid = parseFloat(item.customer_paid_rent_snapshot || 0);
+      const deposit = parseFloat(item.deposit_per_item_snapshot || 0) * item.quantity;
+      const lateFee = parseFloat(item.late_fee_per_day_snapshot || 0);
+
+      totalRent += rentPaid;
+      totalEscrow += deposit;
+
+      // Col 1: Title & Vendor
+      doc.fillColor(textDark).font('Helvetica-Bold').fontSize(7)
+        .text(sanitizeText(item.product_title) || 'Equipment', 44, currY + 4, { width: 150, lineBreak: false, ellipsis: true });
+      doc.fillColor(textMuted).font('Helvetica').fontSize(6)
+        .text(`Vendor: ${sanitizeText(item.vendor_name) || 'Partner'} (${sanitizeText(item.vendor_city) || 'Surat'})`, 44, currY + 14, { width: 150, lineBreak: false, ellipsis: true });
+
+      // Col 2: Window
+      doc.fillColor(textDark).font('Helvetica').fontSize(6.5)
+        .text(`${formatDate(item.start_date)} to ${formatDate(item.end_date)} (${days}d)`, 200, currY + 9, { width: 90, lineBreak: false });
+
+      // Col 3: Qty
+      doc.text(String(item.quantity), 295, currY + 9, { width: 24, align: 'center' });
+
+      // Col 4: Daily Rent
+      doc.text(`INR ${parseFloat(item.rent_per_day_snapshot).toFixed(0)}/d`, 324, currY + 9, { width: 48, align: 'right' });
+
+      // Col 5: Escrow Deposit
+      doc.text(`INR ${deposit.toFixed(0)}`, 378, currY + 9, { width: 56, align: 'right' });
+
+      // Col 6: Late Fee
+      doc.text(`INR ${lateFee.toFixed(0)}/d`, 440, currY + 9, { width: 50, align: 'right' });
+
+      // Col 7: Max Late Days
+      doc.text(`${item.max_late_days}d`, 496, currY + 9, { width: 46, align: 'center' });
+
+      currY += rowHeight;
+    });
+
+    // Summary Totals Strip
+    doc.rect(36, currY, 523, 18).fill('#EEF2F6');
+    doc.fillColor(textDark).font('Helvetica-Bold').fontSize(7.5);
+    doc.text('TOTAL VALUES IN CUSTODY:', 44, currY + 5);
+    doc.text(`Total Rent Paid: INR ${totalRent.toFixed(2)}`, 240, currY + 5);
+    doc.text(`Total Escrow Held: INR ${totalEscrow.toFixed(2)}`, 390, currY + 5, { width: 155, align: 'right' });
+    currY += 26;
+
+    // --- 4. ITEM-WISE CANCELLATION POLICIES ---
+    doc.fillColor(primaryNavy).font('Helvetica-Bold').fontSize(9).text('2. INDIVIDUAL CANCELLATION POLICIES', 36, currY);
+    currY += 12;
+
+    subOrders.forEach((item) => {
+      const fee = parseFloat(item.cancellation_fee_snapshot || 0);
+      const policyRowHeight = 20;
+      doc.rect(36, currY, 523, policyRowHeight).fillAndStroke('#FAFAFA', '#E2E8F0');
+
+      doc.fillColor(textDark).font('Helvetica-Bold').fontSize(7)
+        .text(`• ${sanitizeText(item.product_title)}:`, 44, currY + 5, { width: 170, lineBreak: false, ellipsis: true });
+
+      doc.fillColor(textMuted).font('Helvetica').fontSize(6.8);
+      if (fee > 0) {
+        doc.text(`INR ${fee.toFixed(2)} / item fee deducted from deposit if cancelled before physical handover.`, 220, currY + 5, { width: 330, lineBreak: false });
+      } else {
+        doc.text('100% Free Cancellation: Full rent and deposit refunded if cancelled before physical handover.', 220, currY + 5, { width: 330, lineBreak: false });
+      }
+      currY += policyRowHeight + 3;
+    });
+
+    currY += 8;
+
+    // --- 5. STANDARD BINDING TERMS & CONDITIONS ---
+    doc.fillColor(primaryNavy).font('Helvetica-Bold').fontSize(9).text('3. GENERAL TERMS & ESCROW RECOVERY COVENANTS', 36, currY);
+    currY += 12;
+
+    const terms = [
+      'A. Handshake Verification: Physical possession transfers only when the Lessee inspects equipment and furnishes the secure 6-digit Handover PIN to the Lessor.',
+      'B. Strict Return Schedule: Equipment must be returned by the scheduled End Date. Late returns incur contractual daily late fees, deducted automatically from escrow.',
+      'C. Lost Status & Forfeiture: Exceeding maximum allowed late days marks equipment as "Lost", resulting in complete escrow deposit forfeiture to the vendor.',
+      'D. Condition Audit: Returns are inspected on-site. Damaged items forfeit the security deposit to cover repairs pursuant to platform terms.',
+      'E. Legal Jurisdiction: The platform acts as a neutral payment escrow agent. Unresolved disputes remain subject to local civil jurisdiction.',
+    ];
+
+    doc.rect(36, currY, 523, 70).fillAndStroke(bgLight, borderGray);
+    let termY = currY + 5;
+    doc.fillColor(textMuted).font('Helvetica').fontSize(6.5);
+    terms.forEach((t) => {
+      doc.text(t, 44, termY, { width: 507, lineBreak: false });
+      termY += 12;
+    });
+    currY += 78;
+
+    // --- 6. SIGNATURE & SEAL FOOTER ---
+    doc.rect(36, currY, 523, 32).fillAndStroke('#F1F5F9', borderGray);
+    doc.fillColor(textDark).font('Helvetica-Bold').fontSize(7)
+      .text('DIGITALLY EXECUTED & CERTIFIED BY RMS ESCROW RAILS', 44, currY + 6);
+    doc.fillColor(textMuted).font('Helvetica').fontSize(6)
+      .text('Cryptographically generated upon successful payment verification. Valid without physical handwritten signatures under the Information Technology Act.', 44, currY + 17, { width: 507, lineBreak: false });
+
+    doc.end();
+  });
+}
+
 module.exports = {
   generateCustomerInvoicePDF,
   generatePayoutSlipPDF,
+  generateRentalAgreementPDF,
 };
