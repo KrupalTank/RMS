@@ -60,6 +60,8 @@ const VendorDashboard = () => {
   const [enteredOtp, setEnteredOtp] = useState('');
   const [verifyingOtp, setVerifyingOtp] = useState(false);
 
+  const [assetSerial, setAssetSerial] = useState(''); // 👈 ADD THIS
+
   // Product Form State
   const initialFormState = {
     title: '',
@@ -267,12 +269,14 @@ const VendorDashboard = () => {
       const res = await api.post('/vendor/verifyHandoverOtp', {
         order_id: handoverModalOrder.id,
         otp: enteredOtp.trim(),
+        assigned_serial_number: assetSerial.trim(), // 👈 Optional field passed here
       });
 
       if (res.data.success) {
         setBanner({ success: res.data.message, error: '' });
         setHandoverModalOrder(null);
         setEnteredOtp('');
+        setAssetSerial('');
         fetchData();
       }
     } catch (err) {
@@ -690,14 +694,14 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* TAB 2: ORDERS & RETURN INSPECTION[cite: 7] */}
+      {/* TAB 2: ORDERS & RETURN INSPECTION */}
       {activeTab === 'orders' && (
         <div className="space-y-4">
           {orders.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
               <Package className="w-12 h-12 text-gray-300 mx-auto mb-2" />
               <h3 className="text-sm font-bold text-gray-800">No rental bookings yet</h3>
-              <p className="text-xs text-gray-500">Customer orders for your products will appear here[cite: 7].</p>
+              <p className="text-xs text-gray-500">Customer orders for your products will appear here.</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -774,6 +778,7 @@ const VendorDashboard = () => {
                           onClick={() => {
                             setHandoverModalOrder(ord);
                             setEnteredOtp('');
+                            setAssetSerial('');
                           }}
                           className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm transition flex items-center gap-1.5"
                         >
@@ -1250,7 +1255,7 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* MODAL: ADD CATEGORY[cite: 7] */}
+      {/* MODAL: ADD CATEGORY */}
       {showCategoryModal && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white max-w-sm w-full rounded-xl shadow-xl border border-gray-200 p-5 space-y-4">
@@ -1292,7 +1297,7 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* MODAL: RETURN INSPECTION & SETTLEMENT[cite: 7] */}
+      {/* MODAL: RETURN INSPECTION & SETTLEMENT*/}
       {inspectingOrder && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white max-w-md w-full rounded-xl shadow-xl border border-gray-200 p-6 space-y-4">
@@ -1310,6 +1315,11 @@ const VendorDashboard = () => {
                 <p><b>Product:</b> {inspectingOrder.product_title}</p>
                 <p><b>Customer:</b> {inspectingOrder.customer_name} ({inspectingOrder.customer_phone})</p>
                 <p><b>Scheduled End Date:</b> {inspectingOrder.end_date.split('T')[0]}</p>
+                {inspectingOrder.assigned_serial_number && (
+                  <p className="text-indigo-700 font-bold">
+                    <b>Assigned Asset Tag / S/N:</b> {inspectingOrder.assigned_serial_number}
+                  </p>
+                )}
               </div>
 
               <div>
@@ -1347,7 +1357,7 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* MODAL: VERIFY HANDOVER OTP */}
+      {/* MODAL: VERIFY HANDOVER OTP & OPTIONAL ASSET TAG */}
       {handoverModalOrder && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white max-w-sm w-full rounded-2xl shadow-xl border border-gray-100 p-6 space-y-4">
@@ -1362,22 +1372,26 @@ const VendorDashboard = () => {
                 </div>
               </div>
               <button
-                onClick={() => setHandoverModalOrder(null)}
+                onClick={() => {
+                  setHandoverModalOrder(null);
+                  setAssetSerial('');
+                }}
                 className="text-gray-400 hover:text-gray-600"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleVerifyOtpSubmit} className="space-y-4">
-              <div className="p-3 bg-gray-50 rounded-xl text-xs text-gray-600 space-y-1 border border-gray-100">
+            <form onSubmit={handleVerifyOtpSubmit} className="space-y-3">
+              <div className="p-2.5 bg-gray-50 rounded-xl text-xs text-gray-600 space-y-1 border border-gray-100">
                 <p><b>Product:</b> {handoverModalOrder.product_title}</p>
                 <p><b>Customer:</b> {handoverModalOrder.customer_name}</p>
               </div>
 
+              {/* 6-Digit PIN (Mandatory) */}
               <div>
                 <label className="block text-xs font-bold text-gray-700 mb-1">
-                  Enter Customer's 6-Digit PIN:
+                  Customer 6-Digit PIN:
                 </label>
                 <input
                   type="text"
@@ -1387,17 +1401,34 @@ const VendorDashboard = () => {
                   value={enteredOtp}
                   onChange={(e) => setEnteredOtp(e.target.value.replace(/\D/g, ''))}
                   placeholder="123456"
-                  className="w-full text-center tracking-widest font-mono text-xl py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none font-bold"
+                  className="w-full text-center tracking-widest font-mono text-xl py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none font-bold"
                 />
-                <span className="text-[10px] text-gray-400 block mt-1 text-center">
-                  Ask the customer for the PIN shown on their order card upon handover.
+              </div>
+
+              {/* Asset Serial / Tag Input (Optional) */}
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">
+                  Equipment Serial / Asset Tag: <span className="text-[10px] font-normal text-gray-400">(Optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={assetSerial}
+                  onChange={(e) => setAssetSerial(e.target.value)}
+                  placeholder="e.g. SN-A7M3-90412 or TAG-04"
+                  className="w-full text-xs p-2.5 border border-gray-300 rounded-xl uppercase font-mono focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                />
+                <span className="text-[10px] text-gray-400 block mt-0.5">
+                  Optional for serialized gear (cameras, electronics). Leave blank for clothes or bulk items.
                 </span>
               </div>
 
               <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
                 <button
                   type="button"
-                  onClick={() => setHandoverModalOrder(null)}
+                  onClick={() => {
+                    setHandoverModalOrder(null);
+                    setAssetSerial('');
+                  }}
                   className="px-4 py-2 border rounded-lg text-xs font-semibold text-gray-700 hover:bg-gray-50"
                 >
                   Cancel

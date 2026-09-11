@@ -635,15 +635,21 @@ exports.changeOrderStatus = async (req, res) => {
 };
 
 // POST /api/v1/rms/vendor/verifyHandoverOtp
+// POST /api/v1/rms/vendor/verifyHandoverOtp
 exports.verifyHandoverOtp = async (req, res) => {
   const client = await pool.connect();
   try {
     const vendorId = req.user.id;
-    const { order_id, otp } = req.body;
+    const { order_id, otp, assigned_serial_number } = req.body;
 
     if (!order_id || !otp) {
       return res.status(400).json({ success: false, message: 'Order ID and 6-digit OTP are required.' });
     }
+
+    // Optional serial number: Clean if provided, otherwise null
+    const cleanSerial = assigned_serial_number && assigned_serial_number.trim() !== ''
+      ? assigned_serial_number.trim().toUpperCase()
+      : null;
 
     await client.query('BEGIN');
 
@@ -677,16 +683,16 @@ exports.verifyHandoverOtp = async (req, res) => {
       });
     }
 
-    // 3. Update status to 'With Customer'
-    // NOTE: Database trigger 'trg_handle_order_handover_payout' automatically generates
-    // the rent payout ledger to the vendor and sets payment_status = 'Partial'!
+    // 3. Update status to 'With Customer' and persist optional serial number
+    // Database trigger 'trg_handle_order_handover_payout' generates the rent payout ledger automatically
     const updateRes = await client.query(
       `UPDATE orders 
        SET status = 'With Customer',
-           handover_verified_at = CURRENT_TIMESTAMP
-       WHERE id = $1 
+           handover_verified_at = CURRENT_TIMESTAMP,
+           assigned_serial_number = COALESCE($1, assigned_serial_number)
+       WHERE id = $2 
        RETURNING *`,
-      [order_id]
+      [cleanSerial, order_id]
     );
 
     await client.query('COMMIT');
@@ -700,6 +706,7 @@ exports.verifyHandoverOtp = async (req, res) => {
         newStatus: 'With Customer',
         vendorId: order.vendor_id,
         customerId: order.customer_id,
+        assigned_serial_number: cleanSerial,
       });
 
       io.emit('PAYOUT_GENERATED', {

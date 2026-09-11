@@ -382,12 +382,26 @@ function generateRentalAgreementPDF({ customer, parentOrder, subOrders }) {
       totalRent += rentPaid;
       totalEscrow += deposit;
 
-      // Col 1: Title & Vendor
+      // Col 1: Title, Vendor, and Conditional Serial / Asset Tag
       doc.fillColor(textDark).font('Helvetica-Bold').fontSize(7)
-        .text(sanitizeText(item.product_title) || 'Equipment', 44, currY + 4, { width: 150, lineBreak: false, ellipsis: true });
-      doc.fillColor(textMuted).font('Helvetica').fontSize(6)
-        .text(`Vendor: ${sanitizeText(item.vendor_name) || 'Partner'} (${sanitizeText(item.vendor_city) || 'Surat'})`, 44, currY + 14, { width: 150, lineBreak: false, ellipsis: true });
+        .text(sanitizeText(item.product_title) || 'Equipment', 44, currY + 3, { width: 150, lineBreak: false, ellipsis: true });
 
+      if (item.assigned_serial_number) {
+        // High-value / tracked asset with an assigned serial
+        doc.fillColor(accentIndigo).font('Helvetica-Bold').fontSize(6)
+          .text(`Unit Tag: ${sanitizeText(item.assigned_serial_number)}`, 44, currY + 12, { width: 150, lineBreak: false, ellipsis: true });
+
+        doc.fillColor(textMuted).font('Helvetica').fontSize(5.8)
+          .text(`Vendor: ${sanitizeText(item.vendor_name) || 'Partner'} (${sanitizeText(item.vendor_city) || 'Surat'})`, 44, currY + 19, { width: 150, lineBreak: false, ellipsis: true });
+      } else {
+        // Items without serial numbers (clothes, tools, generic stock)
+        // Center the vendor information cleanly without misleading "Pending" tags
+        doc.fillColor(textMuted).font('Helvetica').fontSize(6)
+          .text(`Vendor: ${sanitizeText(item.vendor_name) || 'Partner'} (${sanitizeText(item.vendor_city) || 'Surat'})`, 44, currY + 13, { width: 150, lineBreak: false, ellipsis: true });
+
+        doc.fillColor(textMuted).font('Helvetica').fontSize(5.5)
+          .text('Type: Standard Bulk / Unserialized Asset', 44, currY + 20, { width: 150, lineBreak: false, ellipsis: true });
+      }
       // Col 2: Window
       doc.fillColor(textDark).font('Helvetica').fontSize(6.5)
         .text(`${formatDate(item.start_date)} to ${formatDate(item.end_date)} (${days}d)`, 200, currY + 9, { width: 90, lineBreak: false });
