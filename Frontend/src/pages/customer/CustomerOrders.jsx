@@ -21,8 +21,6 @@ import {
   MessageSquare,
   KeyRound,
   Copy,
-  Eye,
-  EyeOff,
 } from 'lucide-react';
 
 const CustomerOrders = () => {
@@ -30,7 +28,6 @@ const CustomerOrders = () => {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [actionLoadingId, setActionLoadingId] = useState(null);
 
   const [visibleOtps, setVisibleOtps] = useState({});
 
@@ -85,7 +82,6 @@ const CustomerOrders = () => {
     }
   };
 
-  // MERGED SINGLE SOCKET EFFECT in CustomerOrders.jsx
   useEffect(() => {
     fetchOrders();
 
@@ -97,11 +93,16 @@ const CustomerOrders = () => {
     }
 
     socket.on('ORDER_STATUS_CHANGED', (data) => {
-      // Check if this update belongs to current logged-in customer
       if (!data.customerId || Number(data.customerId) === Number(user?.id)) {
         setOrders((prevOrders) =>
           prevOrders.map((o) =>
-            Number(o.id) === Number(data.orderId) ? { ...o, status: data.newStatus } : o
+            Number(o.id) === Number(data.orderId)
+              ? {
+                  ...o,
+                  status: data.newStatus,
+                  assigned_serial_number: data.assigned_serial_number || o.assigned_serial_number,
+                }
+              : o
           )
         );
       }
@@ -125,26 +126,6 @@ const CustomerOrders = () => {
       }
     } catch (err) {
       alert(err.response?.data?.message || 'Failed to open order chat.');
-    }
-  };
-
-  const handleConfirmHandover = async (orderId) => {
-    const numericId = parseInt(orderId, 10);
-    setActionLoadingId(numericId);
-    setError('');
-
-    try {
-      const res = await api.post('/user/changeOrderStatus', { order_id: numericId });
-      if (res.data.success) {
-        // Instantly switch to 'With Customer' on customer side without waiting or refreshing
-        setOrders((prev) =>
-          prev.map((o) => (Number(o.id) === numericId ? { ...o, status: 'With Customer' } : o))
-        );
-      }
-    } catch (err) {
-      setError(err.response?.data?.message || 'Failed to confirm product receipt.');
-    } finally {
-      setActionLoadingId(null);
     }
   };
 
@@ -189,31 +170,31 @@ const CustomerOrders = () => {
       case 'Lock':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200">
-            <Clock className="w-3.5 h-3.5" /> Ready for Handover
+            <Clock className="w-3.5 h-3.5" /> Reserved (Pending Pickup)
           </span>
         );
       case 'With Customer':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-800 border border-blue-200">
-            <Package className="w-3.5 h-3.5" /> Active Rental
+            <Package className="w-3.5 h-3.5" /> In Your Possession
           </span>
         );
       case 'Returned':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-            <CheckCircle2 className="w-3.5 h-3.5" /> Completed & Returned
+            <CheckCircle2 className="w-3.5 h-3.5" /> Returned & Settled
           </span>
         );
       case 'Lost':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-red-50 text-red-800 border border-red-200">
-            <AlertTriangle className="w-3.5 h-3.5" /> Marked Lost
+            <AlertTriangle className="w-3.5 h-3.5" /> Marked Lost (Deposit Forfeited)
           </span>
         );
       case 'Cancelled':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-700 border border-gray-300">
-            Cancelled
+            Cancelled & Refunded
           </span>
         );
       default:
@@ -243,7 +224,7 @@ const CustomerOrders = () => {
             <span>My Bookings & Rental History</span>
           </h1>
           <p className="text-xs text-gray-500 mt-1">
-            Track equipment handovers, return timelines, and leave reviews for completed rentals.
+            Access Handshake PINs, review equipment serial numbers, download legal agreements, and track returns.
           </p>
         </div>
         <button
@@ -288,7 +269,7 @@ const CustomerOrders = () => {
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 pb-3">
                   <div className="flex items-center gap-3">
                     <span className="text-xs font-bold text-gray-500">
-                      Order #{order.id} (Group #{order.group_id})
+                      Order #{order.id} (Booking Group #{order.group_id})
                     </span>
                     <div className="flex items-center gap-2">
                       <button
@@ -309,9 +290,9 @@ const CustomerOrders = () => {
                           }
                         }}
                         className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded border border-indigo-200 transition"
-                        title="Download Official Rental Agreement PDF"
+                        title="Download Legal Rental Contract"
                       >
-                        📄 Rental Agreement
+                        📄 Rental Agreement PDF
                       </button>
                     </div>
                     <span className="text-[11px] text-gray-400">
@@ -319,7 +300,7 @@ const CustomerOrders = () => {
                     </span>
                     {discountApplied > 0 && (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                        <Tag className="w-3 h-3" /> 10% Loyalty Discount Applied (-₹{discountApplied.toFixed(2)})
+                        <Tag className="w-3 h-3" /> Store Discount Applied (-₹{discountApplied.toFixed(2)})
                       </span>
                     )}
                   </div>
@@ -337,19 +318,26 @@ const CustomerOrders = () => {
                     />
                     <div>
                       <h3 className="text-sm font-bold text-gray-900">{order.product_title}</h3>
-                      <p className="text-xs text-gray-500">Quantity: <b>{order.quantity} unit(s)</b></p>
+                      <p className="text-xs text-gray-500">
+                        Quantity: <b>{order.quantity} unit(s)</b>
+                      </p>
                       <div className="mt-1 flex items-center gap-1.5 text-[11px] text-gray-600">
                         <MapPin className="w-3.5 h-3.5 text-gray-400" />
-                        <span>Vendor: {order.vendor_name} ({order.vendor_city})</span>
+                        <span>Store: {order.vendor_name} ({order.vendor_city})</span>
                       </div>
                       <div className="flex items-center gap-1.5 text-[11px] text-gray-600">
                         <Phone className="w-3.5 h-3.5 text-gray-400" />
-                        <span>Contact: {order.vendor_phone}</span>
+                        <span>Store Contact: {order.vendor_phone}</span>
                       </div>
+                      {order.assigned_serial_number && (
+                        <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-800 rounded font-mono text-[11px] font-bold border border-indigo-200">
+                          <span>Unit S/N: {order.assigned_serial_number}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  {/* Dates & Rates Snapshots (4 cols) */}
+                  {/* Pricing Breakdown (4 cols) */}
                   <div className="md:col-span-4 space-y-1 text-xs text-gray-600 bg-gray-50 p-3 rounded-lg border border-gray-100">
                     <div className="flex justify-between">
                       <span>Rental Duration:</span>
@@ -358,46 +346,45 @@ const CustomerOrders = () => {
                       </span>
                     </div>
                     <div className="flex justify-between">
-                      <span>Rent Snapshot:</span>
+                      <span>Daily Rate Snapshot:</span>
                       <span className="font-semibold text-gray-900">
                         ₹{parseFloat(order.rent_per_day_snapshot).toFixed(2)}/day
                       </span>
                     </div>
-                    {discountApplied > 0 && (
-                      <div className="flex justify-between text-emerald-600 font-semibold">
-                        <span>Discounted Rent Paid:</span>
-                        <span>₹{parseFloat(order.customer_paid_rent_snapshot || 0).toFixed(2)}</span>
-                      </div>
-                    )}
+                    <div className="flex justify-between text-emerald-600 font-semibold">
+                      <span>Total Net Rent Paid:</span>
+                      <span>₹{parseFloat(order.customer_paid_rent_snapshot || 0).toFixed(2)}</span>
+                    </div>
                     <div className="flex justify-between">
-                      <span>Security Escrow:</span>
+                      <span>Security Deposit (Refundable):</span>
                       <span className="font-semibold text-gray-900">
                         ₹{(parseFloat(order.deposit_per_item_snapshot) * order.quantity).toFixed(2)}
                       </span>
                     </div>
-                    <div className="flex justify-between text-[11px] text-gray-500">
-                      <span>Late Return Grace:</span>
-                      <span>{order.max_late_days} days allowed</span>
-                    </div>
+                    {order.deposit_refund_reference && (
+                      <div className="flex justify-between text-[11px] text-blue-700 pt-1 border-t border-gray-200">
+                        <span>Deposit Refund Ref:</span>
+                        <span className="font-mono font-bold">{order.deposit_refund_reference}</span>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Action Column (3 cols) */}
+                  {/* Actions (3 cols) */}
                   <div className="md:col-span-3 flex flex-col items-stretch justify-center gap-2">
-                    {/* Real-Time Chat Button */}
                     <button
                       onClick={() => handleOpenOrderChat(order)}
                       className="w-full py-1.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-lg border border-blue-200 transition flex items-center justify-center gap-1.5"
                     >
                       <MessageSquare className="w-3.5 h-3.5" />
-                      <span>Chat Vendor</span>
+                      <span>Chat with Vendor</span>
                     </button>
 
-                    {/* Handover Security PIN Card for Locked Orders */}
+                    {/* Handshake Security PIN Card for Locked Orders */}
                     {order.status === 'Lock' && (
                       <div className="w-full bg-amber-50/80 border border-amber-300 rounded-xl p-3 space-y-2 text-center">
                         <div className="flex items-center justify-between text-amber-900 text-[11px] font-bold">
                           <span className="flex items-center gap-1">
-                            <KeyRound className="w-3.5 h-3.5 text-amber-600" /> Handover PIN
+                            <KeyRound className="w-3.5 h-3.5 text-amber-600" /> Handshake PIN
                           </span>
                           <button
                             type="button"
@@ -418,7 +405,7 @@ const CustomerOrders = () => {
                             <button
                               onClick={() => {
                                 navigator.clipboard.writeText(order.handover_otp);
-                                alert('Handover PIN copied to clipboard!');
+                                alert('Handshake PIN copied to clipboard!');
                               }}
                               className="text-gray-400 hover:text-gray-600"
                               title="Copy PIN"
@@ -428,7 +415,7 @@ const CustomerOrders = () => {
                           )}
                         </div>
                         <p className="text-[10px] text-amber-700 leading-tight">
-                          Provide this PIN to the vendor upon inspecting and receiving the gear.
+                          Provide this 6-digit PIN to the store owner upon inspecting and receiving the gear.
                         </p>
 
                         <button
@@ -449,7 +436,7 @@ const CustomerOrders = () => {
                         className="w-full py-2 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5"
                       >
                         <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
-                        <span>{order.review_id ? 'Update Review' : 'Write a Review'}</span>
+                        <span>{order.review_id ? 'Update Review' : 'Rate Experience'}</span>
                       </button>
                     )}
                   </div>
@@ -466,7 +453,7 @@ const CustomerOrders = () => {
           <div className="bg-white max-w-md w-full rounded-xl shadow-xl border border-gray-200 p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-gray-100 pb-3">
               <h3 className="text-base font-bold text-gray-900">
-                Rate & Review: {activeReviewOrder.product_title}
+                Review: {activeReviewOrder.product_title}
               </h3>
               <button
                 onClick={() => setActiveReviewOrder(null)}
@@ -503,9 +490,7 @@ const CustomerOrders = () => {
                     >
                       <Star
                         className={`w-7 h-7 ${
-                          star <= rating
-                            ? 'fill-amber-400 text-amber-400'
-                            : 'text-gray-300'
+                          star <= rating ? 'fill-amber-400 text-amber-400' : 'text-gray-300'
                         }`}
                       />
                     </button>
@@ -522,7 +507,7 @@ const CustomerOrders = () => {
                   rows={4}
                   value={comment}
                   onChange={(e) => setComment(e.target.value)}
-                  placeholder="How was the product condition, performance, and vendor experience?"
+                  placeholder="How was the equipment condition, accuracy, and handover?"
                   className="w-full text-xs p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
@@ -540,7 +525,7 @@ const CustomerOrders = () => {
                   disabled={reviewSubmitting}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold disabled:opacity-50 transition"
                 >
-                  {reviewSubmitting ? 'Posting Review...' : 'Submit Review'}
+                  {reviewSubmitting ? 'Submitting...' : 'Submit Review'}
                 </button>
               </div>
             </form>
@@ -550,11 +535,7 @@ const CustomerOrders = () => {
 
       {/* Customer Order Cancellation Modal */}
       {cancellingOrder && (() => {
-        const totalDays = Math.ceil(
-          Math.abs(new Date(cancellingOrder.end_date) - new Date(cancellingOrder.start_date)) / (1000 * 60 * 60 * 24)
-        ) + 1;
-        const actualPaidRent = parseFloat(cancellingOrder.customer_paid_rent_snapshot) || 
-          (parseFloat(cancellingOrder.rent_per_day_snapshot) * cancellingOrder.quantity * totalDays);
+        const actualPaidRent = parseFloat(cancellingOrder.customer_paid_rent_snapshot || 0);
         const totalDeposit = parseFloat(cancellingOrder.deposit_per_item_snapshot) * cancellingOrder.quantity;
         const feePerUnit = parseFloat(cancellingOrder.cancellation_fee_snapshot || 0);
         const totalCancellationFee = Math.min(feePerUnit * cancellingOrder.quantity, totalDeposit);
@@ -571,25 +552,26 @@ const CustomerOrders = () => {
               </div>
 
               <p className="text-xs text-gray-600">
-                Are you sure you want to cancel your reservation for <b>{cancellingOrder.product_title}</b>?
+                Cancel your reservation for <b>{cancellingOrder.product_title}</b>? The refund will be initiated directly via the store's gateway.
               </p>
 
-              {/* Breakdown Box */}
               <div className="bg-gray-50 p-3.5 rounded-lg border border-gray-200 text-xs space-y-2">
                 <div className="flex justify-between text-gray-600">
-                  <span>Paid Rental Cost (100% Refundable):</span>
+                  <span>Net Rent Paid (100% Refundable):</span>
                   <span className="font-bold text-gray-900">₹{actualPaidRent.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-gray-600">
-                  <span>Escrow Deposit:</span>
+                  <span>Security Deposit:</span>
                   <span className="font-bold text-gray-900">₹{totalDeposit.toFixed(2)}</span>
                 </div>
-                <div className="flex justify-between text-red-600">
-                  <span>Vendor Cancellation Fee ({cancellingOrder.quantity} item × ₹{feePerUnit}):</span>
-                  <span className="font-bold">-₹{totalCancellationFee.toFixed(2)}</span>
-                </div>
+                {totalCancellationFee > 0 && (
+                  <div className="flex justify-between text-red-600">
+                    <span>Store Cancellation Fee ({cancellingOrder.quantity} unit(s) × ₹{feePerUnit}):</span>
+                    <span className="font-bold">-₹{totalCancellationFee.toFixed(2)}</span>
+                  </div>
+                )}
                 <div className="pt-2 border-t border-gray-200 flex justify-between items-center text-sm">
-                  <span className="font-extrabold text-gray-900">Total Refund to You:</span>
+                  <span className="font-extrabold text-gray-900">Direct Refund Disbursal:</span>
                   <span className="font-extrabold text-emerald-600">₹{estimatedRefund.toFixed(2)}</span>
                 </div>
               </div>

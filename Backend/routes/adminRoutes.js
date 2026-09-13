@@ -9,30 +9,33 @@ const { validateRequired } = require('../middlewares/validateMiddleware');
 router.use(verifyToken);
 router.use(authorizeRoles('admin'));
 
+// Dashboard & Analytics
 router.get('/dashboardStats', adminController.getDashboardStats);
 router.get('/ordersByCategory', adminController.getOrdersByCategory);
+router.get('/transactionLedger', adminController.getTransactionLedger);
+
+// Vendor & Inventory Moderation
 router.get('/vendors', adminController.getAllVendors);
 router.get('/vendorProducts/:vendorId', adminController.getVendorProducts);
 router.delete('/product/:id', adminController.deleteProductByAdmin);
+
+// Annual SaaS Licensing & Platform Royalties
+router.get('/annualBillingAudit', adminController.getAnnualBillingAudit);
+router.post('/markAnnualBillingPaid', validateRequired(['billing_id']), adminController.markAnnualBillingPaid);
+
+// User & Delinquency Management
 router.get('/delinquentUsers', adminController.getDelinquentUsers);
+router.post('/pardonDelinquentUser', validateRequired(['userId']), adminController.pardonDelinquentUser);
 router.post('/toggleBlockUser', validateRequired(['userId']), adminController.toggleBlockUser);
+
+// KYC Officers
 router.get('/officers', adminController.getKycOfficers);
 router.post('/addOfficer', validateRequired(['full_name', 'email', 'password', 'phone']), adminController.addKycOfficer);
 router.delete('/removeOfficer/:id', adminController.removeKycOfficer);
-router.get('/pendingPayouts', adminController.getPendingPayouts);
-router.post('/recordPayoutReference', validateRequired(['payout_id', 'gateway_reference_id']), adminController.recordPayoutReference);
-// router.post('/createPayoutOrder', validateRequired(['payout_id']), adminController.createPayoutOrder);
 
+// Maintenance
 router.post('/triggerLostOrdersCheck', adminController.triggerLostOrdersCheck);
-router.get('/transactionLedger', adminController.getTransactionLedger);
 
-router.post('/pardonDelinquentUser', validateRequired(['userId']), adminController.pardonDelinquentUser);
-
-// Inside routes/adminRoutes.js
-router.post(
-  '/batchBankingPayouts',
-  validateRequired(['payout_ids']),
-  adminController.batchBankingPayouts
-);
+router.post('/triggerLicenseExpiryCheck', adminController.triggerLicenseExpiryCheck);
 
 module.exports = router;

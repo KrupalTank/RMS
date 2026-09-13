@@ -1,9 +1,4 @@
 // utils/encryptionUtil.js
-
-/*
-This handles encrypting KYC documents and live webcam captures before uploading to ImageKit, and decrypting them on-the-fly when requested by the KYC officer.
-*/
-
 const crypto = require('crypto');
 require('dotenv').config();
 
@@ -29,4 +24,41 @@ function decryptBuffer(encryptedBuffer) {
   return Buffer.concat([decipher.update(data), decipher.final()]);
 }
 
-module.exports = { encryptBuffer, decryptBuffer };
+/**
+ * Encrypts a string (e.g., Razorpay Key Secret) into a colon-delimited hex string: iv:authTag:encryptedData
+ */
+function encryptText(plainText) {
+  if (!plainText) return null;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv(ALGORITHM, SECRET_KEY, iv);
+  let encrypted = cipher.update(plainText, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  const authTag = cipher.getAuthTag().toString('hex');
+  return `${iv.toString('hex')}:${authTag}:${encrypted}`;
+}
+
+/**
+ * Decrypts an encrypted hex string back to original plain text
+ */
+function decryptText(cipherText) {
+  if (!cipherText) return null;
+  const parts = cipherText.split(':');
+  if (parts.length !== 3) return cipherText; // Fallback if plain text was stored
+
+  const iv = Buffer.from(parts[0], 'hex');
+  const authTag = Buffer.from(parts[1], 'hex');
+  const encrypted = Buffer.from(parts[2], 'hex');
+
+  const decipher = crypto.createDecipheriv(ALGORITHM, SECRET_KEY, iv);
+  decipher.setAuthTag(authTag);
+  let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
+}
+
+module.exports = {
+  encryptBuffer,
+  decryptBuffer,
+  encryptText,
+  decryptText,
+};

@@ -1,18 +1,49 @@
 // controllers/paymentController.js
 const crypto = require('crypto');
+const Razorpay = require('razorpay');
 const pool = require('../config/db');
-const razorpay = require('../config/razorpay');
 const { calculateRentalQuotation } = require('../services/pricingService');
-const { sendBookingConfirmationEmail, sendAccountBlockedEmail } = require('../services/emailService');
+const { decryptText } = require('../utils/encryptionUtil');
+const { sendBookingConfirmationEmail, sendAccountBlockedEmail, sendVendorBookingNotificationEmail } = require('../services/emailService');
+
+// Helper: Dynamically instantiate Razorpay client for a specific vendor
+async function getVendorRazorpayClient(vendorId, client = pool) {
+  const vendorRes = await client.query(
+    'SELECT id, full_name, razorpay_key_id, razorpay_key_secret FROM users WHERE id = $1',
+    [vendorId]
+  );
+
+  if (vendorRes.rows.length === 0) {
+    throw new Error('Vendor account not found.');
+  }
+
+  const vendor = vendorRes.rows[0];
+  if (!vendor.razorpay_key_id || !vendor.razorpay_key_secret) {
+    throw new Error(`Vendor "${vendor.full_name}" has not configured their Razorpay payment gateway yet.`);
+  }
+
+  const decryptedSecret = decryptText(vendor.razorpay_key_secret);
+
+  const instance = new Razorpay({
+    key_id: vendor.razorpay_key_id,
+    key_secret: decryptedSecret,
+  });
+
+  return {
+    instance,
+    key_id: vendor.razorpay_key_id,
+    key_secret: decryptedSecret,
+    vendor_name: vendor.full_name,
+  };
+}
 
 // POST /api/v1/rms/payment/createCheckoutOrder
-// POST /api/v1/rms/payment/createCheckoutOrder in paymentController.js
 exports.createCheckoutOrder = async (req, res) => {
   const client = await pool.connect();
   try {
     const customerId = req.user.id;
     const kycStatus = req.user.kyc_status;
-    const { coupon_assignments = [] } = req.body; // Array: [{ product_id, coupon_id }]
+    const { coupon_assignments = [] } = req.body; // [{ product_id, coupon_id }]
 
     // 1. Check if user is suspended
     const userCheck = await client.query('SELECT is_blocked FROM users WHERE id = $1', [customerId]);
@@ -40,9 +71,54 @@ exports.createCheckoutOrder = async (req, res) => {
 
     const cartItems = cartRes.rows;
 
+    // 3. Ensure all items belong to exactly ONE vendor
+    const vendorIds = [...new Set(cartItems.map((item) => item.vendor_id))];
+    if (vendorIds.length > 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Multi-vendor checkout is not supported. Please clear your cart and order from one shop at a time.',
+      });
+    }
+    
+    const currentVendorId = vendorIds[0];
+
+    // Check if the vendor's subscription has an overdue bill past grace period
+    const vendorCheck = await pool.query(
+      `SELECT u.full_name,
+              (
+                SELECT COUNT(*) 
+                FROM vendor_annual_billing vab 
+                WHERE vab.vendor_id = u.id 
+                  AND vab.payment_status IN ('PENDING', 'OVERDUE')
+                  AND CURRENT_DATE > (vab.period_end + INTERVAL '3 days')
+              ) AS overdue_past_grace
+       FROM users u WHERE u.id = $1`,
+      [currentVendorId]
+    );
+
+    if (vendorCheck.rows.length > 0) {
+      const { full_name, overdue_past_grace } = vendorCheck.rows[0];
+      if (parseInt(overdue_past_grace, 10) > 0) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({
+          success: false,
+          message: `Store "${full_name}" is temporarily paused for annual SaaS licensing renewal. No new bookings can be placed at this moment.`,
+        });
+      }
+    }
+
+
+    // 4. Fetch the vendor's dynamic Razorpay client
+    let vendorGateway;
+    try {
+      vendorGateway = await getVendorRazorpayClient(currentVendorId, client);
+    } catch (gatewayErr) {
+      return res.status(400).json({ success: false, message: gatewayErr.message });
+    }
+
     await client.query('BEGIN');
 
-    // 3. Validate & Lock all assigned coupons (Verify each coupon is distinct, AVAILABLE, and belongs to user)
+    // 5. Validate & Lock assigned store coupons (from 'store_coupons')
     const assignedCouponMap = new Map(); // product_id -> couponRecord
     const uniqueCouponIds = new Set();
 
@@ -59,28 +135,49 @@ exports.createCheckoutOrder = async (req, res) => {
       }
       uniqueCouponIds.add(coupon_id);
 
+      // Verify coupon belongs to this vendor, is active, within validity dates (end of day inclusive)
       const couponRes = await client.query(
-        `SELECT * FROM coupons 
-         WHERE id = $1 AND user_id = $2 AND status = 'AVAILABLE' 
+        `SELECT * FROM store_coupons 
+         WHERE id = $1 
+           AND vendor_id = $2 
+           AND is_active = TRUE
+           AND (valid_until IS NULL OR valid_until::DATE >= CURRENT_DATE)
+           AND (max_uses IS NULL OR used_count < max_uses)
          FOR UPDATE`,
-        [coupon_id, customerId]
+        [coupon_id, currentVendorId]
       );
 
       if (couponRes.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(400).json({
           success: false,
-          message: `Loyalty coupon #${coupon_id} is invalid or already redeemed.`,
+          message: `Coupon #${coupon_id} is invalid, expired, or fully redeemed for this store.`,
         });
       }
 
-      assignedCouponMap.set(product_id, couponRes.rows[0]);
+      const coupon = couponRes.rows[0];
+
+      // Check per-user limit
+      const userRedemptions = await client.query(
+        'SELECT COUNT(*)::INT AS count FROM coupon_redemptions WHERE coupon_id = $1 AND customer_id = $2',
+        [coupon.id, customerId]
+      );
+
+      if (userRedemptions.rows[0].count >= coupon.per_user_limit) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          success: false,
+          message: `You have reached the maximum allowed redemptions for coupon "${coupon.code}".`,
+        });
+      }
+
+      assignedCouponMap.set(product_id, coupon);
     }
 
-    // 4. Create parent_order
+    // 6. Create parent_order scoped to this vendor
     const parentOrderRes = await client.query(
-      'INSERT INTO parent_order (customer_id) VALUES ($1) RETURNING id',
-      [customerId]
+      'INSERT INTO parent_order (customer_id, vendor_id) VALUES ($1, $2) RETURNING id',
+      [customerId, currentVendorId]
     );
     const groupId = parentOrderRes.rows[0].id;
 
@@ -118,7 +215,6 @@ exports.createCheckoutOrder = async (req, res) => {
       }
 
       const appliedCoupon = assignedCouponMap.get(item.product_id);
-      const discountPercent = appliedCoupon ? parseFloat(appliedCoupon.discount_percent) : 0;
 
       const quotation = calculateRentalQuotation(
         item,
@@ -126,7 +222,7 @@ exports.createCheckoutOrder = async (req, res) => {
         item.end_date,
         item.quantity,
         kycStatus,
-        discountPercent
+        appliedCoupon || null
       );
 
       grandTotalAmount += quotation.grandTotal;
@@ -136,13 +232,12 @@ exports.createCheckoutOrder = async (req, res) => {
           (customer_id, vendor_id, product_id, group_id, quantity, start_date, end_date, 
            max_late_days, rent_per_day_snapshot, deposit_per_item_snapshot, late_fee_per_day_snapshot, 
            cancellation_fee_snapshot, applied_coupon_id, gross_rent_snapshot, discount_amount_snapshot, 
-           customer_paid_rent_snapshot, platform_commission_snapshot, vendor_net_rent_snapshot, 
-           status, payment_status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'Pending_Payment', 'No')
+           customer_paid_rent_snapshot, status, payment_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'Pending_Payment', 'No')
          RETURNING *`,
         [
           customerId,
-          item.vendor_id,
+          currentVendorId,
           item.product_id,
           groupId,
           item.quantity,
@@ -157,28 +252,34 @@ exports.createCheckoutOrder = async (req, res) => {
           quotation.grossRent,
           quotation.discountAmount,
           quotation.customerPaidRent,
-          quotation.platformCommission,
-          quotation.vendorNetRent,
         ]
       );
 
       generatedSubOrders.push(orderInsert.rows[0]);
     }
 
+    // 7. Initialize Order on Vendor's Razorpay Account
     const razorpayOptions = {
       amount: Math.round(grandTotalAmount * 100),
       currency: 'INR',
-      receipt: `rms_grp_${groupId}_${Date.now()}`,
+      receipt: `rms_ord_${groupId}_${Date.now()}`,
     };
 
-    const rzpOrder = await razorpay.orders.create(razorpayOptions);
+    const rzpOrder = await vendorGateway.instance.orders.create(razorpayOptions);
+
+    // Save Razorpay order ID to parent order
+    await client.query(
+      'UPDATE parent_order SET razorpay_order_id = $1, total_amount = $2 WHERE id = $3',
+      [rzpOrder.id, grandTotalAmount, groupId]
+    );
 
     await client.query('COMMIT');
 
     return res.status(200).json({
       success: true,
-      message: 'Checkout initialized. Complete payment to lock booking.',
-      key_id: process.env.RAZORPAY_KEY_ID,
+      message: 'Checkout initialized. Complete direct payment to vendor.',
+      key_id: vendorGateway.key_id, // Vendor's public Key ID passed to client
+      vendor_name: vendorGateway.vendor_name,
       razorpay_order_id: rzpOrder.id,
       amount: rzpOrder.amount,
       currency: rzpOrder.currency,
@@ -188,7 +289,7 @@ exports.createCheckoutOrder = async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('Create Checkout Error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to create checkout order.' });
+    return res.status(500).json({ success: false, message: error.message || 'Failed to create checkout order.' });
   } finally {
     client.release();
   }
@@ -205,9 +306,22 @@ exports.verifyPayment = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Incomplete payment verification payload.' });
     }
 
-    // 1. Verify Razorpay Signature (HMAC SHA-256)
+    // 1. Fetch parent_order and vendor credentials
+    const parentRes = await client.query(
+      'SELECT id, vendor_id, total_amount FROM parent_order WHERE id = $1 AND customer_id = $2',
+      [group_id, customerId]
+    );
+
+    if (parentRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Parent order record not found.' });
+    }
+
+    const parentOrder = parentRes.rows[0];
+    const vendorGateway = await getVendorRazorpayClient(parentOrder.vendor_id, client);
+
+    // 2. Verify HMAC SHA-256 signature using the Vendor's Key Secret
     const generatedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .createHmac('sha256', vendorGateway.key_secret)
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
       .digest('hex');
 
@@ -215,135 +329,114 @@ exports.verifyPayment = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Payment signature verification failed.' });
     }
 
-    // 2. Fetch User & Current Block Status
+    // Save payment ID to parent order
+    await client.query(
+      'UPDATE parent_order SET razorpay_payment_id = $1 WHERE id = $2',
+      [razorpay_payment_id, group_id]
+    );
+
+    // 3. Fetch User & Current Block Status
     const userRes = await client.query(
       'SELECT full_name, is_blocked, email, city FROM users WHERE id = $1',
       [customerId]
     );
-
-    if (userRes.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'User record not found.' });
-    }
 
     const user = userRes.rows[0];
     const io = req.app.get('socketio');
 
     await client.query('BEGIN');
 
-    // 3. CASE A: User was blocked while checkout was in-flight
+    // 4. CASE A: User was blocked while checkout was in-flight
     if (user.is_blocked) {
-      // Step A: Transition to Lock
-      await client.query(
-        `UPDATE orders 
-         SET status = 'Lock' 
-         WHERE group_id = $1 AND status = 'Pending_Payment'`,
-        [group_id]
-      );
-
-      // Step B: Immediately Cancel as admin (DB trigger uses customer_paid_rent_snapshot)
+      // Step A: Cancel sub-orders
       const cancelledOrders = await client.query(
         `UPDATE orders 
          SET status = 'Cancelled', 
-             cancelled_by = 'admin' 
-         WHERE group_id = $1 AND status = 'Lock' 
+             cancelled_by = 'admin',
+             payment_status = 'Refunded_Full'
+         WHERE group_id = $1 AND status = 'Pending_Payment' 
          RETURNING *`,
         [group_id]
       );
 
-      // Calculate total refund amount based on what the customer actually paid
       const totalRefundAmount = cancelledOrders.rows.reduce((sum, ord) => {
         const rentPaid = parseFloat(ord.customer_paid_rent_snapshot || 0);
         const deposit = parseFloat(ord.deposit_per_item_snapshot || 0) * ord.quantity;
         return sum + rentPaid + deposit;
       }, 0);
 
-      // Redeem applied coupon permanently even on blocked cancellation (no reuse)
-      for (const ord of cancelledOrders.rows) {
-        if (ord.applied_coupon_id) {
-          await client.query(
-            `UPDATE coupons 
-             SET status = 'REDEEMED', 
-                 redeemed_order_id = $1, 
-                 redeemed_at = CURRENT_TIMESTAMP 
-             WHERE id = $2`,
-            [ord.id, ord.applied_coupon_id]
-          );
-        }
+      // Trigger automatic 100% refund via Vendor's Razorpay API
+      try {
+        await vendorGateway.instance.payments.refund(razorpay_payment_id, {
+          amount: Math.round(totalRefundAmount * 100),
+          notes: { reason: `Auto-refund for suspended user checkout #${group_id}` },
+        });
+      } catch (refundErr) {
+        console.error('Automated blocked account refund failed:', refundErr.message);
       }
 
       await client.query('COMMIT');
 
-      if (io) {
-        cancelledOrders.rows.forEach((order) => {
-          io.emit('PAYOUT_GENERATED', {
-            orderId: order.id,
-            customerId,
-            type: 'full_refund',
-          });
-        });
-      }
-
       sendAccountBlockedEmail({
         to: user.email,
         userName: user.full_name,
-        reason: 'Your checkout payment was completed while your account was flagged as suspended by administration. A 100% refund has been registered.',
-        paymentDetails: {
-          razorpay_payment_id,
-          razorpay_order_id,
-        },
+        reason: 'Your checkout payment was received, but your account was suspended by administration. A 100% refund was issued to your payment source.',
+        paymentDetails: { razorpay_payment_id, razorpay_order_id },
         groupId: group_id,
         refundAmount: totalRefundAmount,
       });
 
       return res.status(403).json({
         success: false,
-        message: 'Payment received, but your account has been suspended by administration. A 100% full refund has been recorded and scheduled for transfer.',
+        message: 'Payment received, but your account is suspended. An automated 100% refund has been initiated to your original payment method.',
       });
     }
 
-    // 4. CASE B: Standard Active User Flow
-    // Fetch all pending sub-orders under this group
+    // 5. CASE B: Standard Active User Flow
     const pendingOrdersRes = await client.query(
-      `SELECT id FROM orders 
+      `SELECT id, applied_coupon_id, discount_amount_snapshot FROM orders 
        WHERE group_id = $1 AND status = 'Pending_Payment'`,
       [group_id]
     );
 
     const updatedOrders = [];
     for (const pending of pendingOrdersRes.rows) {
-      // Cryptographically secure 6-digit PIN
+      // Cryptographically secure 6-digit Handshake OTP
       const otp = crypto.randomInt(100000, 1000000).toString();
       const updateSingle = await client.query(
         `UPDATE orders 
          SET status = 'Lock',
+             payment_status = 'Paid',
              handover_otp = $1
          WHERE id = $2
          RETURNING *`,
         [otp, pending.id]
       );
       updatedOrders.push(updateSingle.rows[0]);
-    }
 
-    // Redeem coupons permanently upon successful payment lock
-    for (const ord of updatedOrders) {
-      if (ord.applied_coupon_id) {
+      // Record coupon redemption in store_coupons & coupon_redemptions
+      if (pending.applied_coupon_id) {
         await client.query(
-          `UPDATE coupons 
-           SET status = 'REDEEMED', 
-               redeemed_order_id = $1, 
-               redeemed_at = CURRENT_TIMESTAMP 
-           WHERE id = $2`,
-          [ord.id, ord.applied_coupon_id]
+          `INSERT INTO coupon_redemptions (coupon_id, order_id, customer_id, discount_applied)
+           VALUES ($1, $2, $3, $4)`,
+          [pending.applied_coupon_id, pending.id, customerId, pending.discount_amount_snapshot]
+        );
+
+        await client.query(
+          `UPDATE store_coupons 
+           SET used_count = used_count + 1 
+           WHERE id = $1`,
+          [pending.applied_coupon_id]
         );
       }
     }
 
-    // Clear the customer's cart now that orders are confirmed
+    // Clear the customer's cart
     await client.query('DELETE FROM cart WHERE user_id = $1', [customerId]);
 
     await client.query('COMMIT');
 
-    // 5. Emit real-time WebSocket alerts to vendors (Fixed: updatedOrders is an array)
+    // 6. Emit real-time WebSocket alerts to vendors
     if (io) {
       updatedOrders.forEach((order) => {
         io.emit('ORDER_LOCKED', {
@@ -355,7 +448,7 @@ exports.verifyPayment = async (req, res) => {
       });
     }
 
-    // 6. Fetch sub-order details for booking confirmation invoice email
+    // 7. Send invoice email
     const subOrdersQuery = await pool.query(
       `SELECT o.*, p.title AS product_title, u.full_name AS vendor_name
        FROM orders o
@@ -365,6 +458,11 @@ exports.verifyPayment = async (req, res) => {
       [group_id]
     );
 
+    const vendorQuery = await pool.query(
+      'SELECT id, full_name, email, phone FROM users WHERE id = $1',
+      [parentOrder.vendor_id]
+    );
+
     sendBookingConfirmationEmail({
       customer: user,
       parentOrder: { group_id },
@@ -372,15 +470,25 @@ exports.verifyPayment = async (req, res) => {
       paymentDetails: { razorpay_payment_id },
     });
 
+    if (vendorQuery.rows.length > 0) {
+      sendVendorBookingNotificationEmail({
+        vendor: vendorQuery.rows[0],
+        customer: user,
+        parentOrder: { group_id },
+        subOrders: subOrdersQuery.rows,
+        paymentDetails: { razorpay_payment_id },
+      });
+    }
+
     return res.status(200).json({
       success: true,
-      message: 'Payment verified successfully. Orders locked for pickup with Handover PIN.',
-      orders: updatedOrders, // Fixed: returning array directly
+      message: 'Payment verified directly by vendor. Equipment locked for physical handover with PIN.',
+      orders: updatedOrders,
     });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('Verify Payment Error:', error);
-    return res.status(500).json({ success: false, message: 'Payment verification failed.' });
+    return res.status(500).json({ success: false, message: error.message || 'Payment verification failed.' });
   } finally {
     client.release();
   }

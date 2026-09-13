@@ -15,9 +15,10 @@ router.use(authorizeRoles('vendor', 'admin'));
 // Product Management
 router.get('/getProducts', vendorController.getMyProducts);
 router.get('/getProduct/:id', vendorController.getProductById);
-// routes/vendorRoutes.js
-router.post('/addProduct', upload.array('images', 6),
-validateRequired([
+router.post(
+  '/addProduct',
+  upload.array('images', 6),
+  validateRequired([
     'title',
     'category_id',
     'total_quantity',
@@ -28,34 +29,70 @@ validateRequired([
     'deposit_non_verified',
     'late_fee_verified',
     'late_fee_non_verified',
-  ]), vendorController.addProduct);
+  ]),
+  vendorController.addProduct
+);
+router.put(
+  '/editProduct/:id',
+  upload.array('images', 6),
+  validateRequired([
+    'title',
+    'category_id',
+    'total_quantity',
+    'rent_per_day_1_4',
+    'rent_per_day_5_9',
+    'rent_per_day_10_onwards',
+    'deposit_verified',
+    'deposit_non_verified',
+    'late_fee_verified',
+    'late_fee_non_verified',
+  ]),
+  vendorController.editProduct
+);
 
-router.put('/editProduct/:id', upload.array('images', 6),
-validateRequired([
-    'title',
-    'category_id',
-    'total_quantity',
-    'rent_per_day_1_4',
-    'rent_per_day_5_9',
-    'rent_per_day_10_onwards',
-    'deposit_verified',
-    'deposit_non_verified',
-    'late_fee_verified',
-    'late_fee_non_verified',
-  ]), vendorController.editProduct);
 // Categories
 router.get('/getCategories', vendorController.getCategories);
 router.post('/addCategory', validateRequired(['name']), vendorController.addCategory);
 
-// Orders
+// Orders & Handover
 router.get('/getOrders', vendorController.getVendorOrders);
 router.get('/getOrder/:id', vendorController.getVendorOrderById);
 router.post('/changeOrderStatus', validateRequired(['order_id', 'status']), vendorController.changeOrderStatus);
+router.post('/verifyHandoverOtp', validateRequired(['order_id', 'otp']), vendorController.verifyHandoverOtp);
 
-// Vendor Profile
+// Razorpay Gateway Settings & SaaS Status
+router.get('/gatewayStatus', vendorController.getGatewayStatus);
+router.put(
+  '/updateGatewayCredentials',
+  validateRequired(['razorpay_key_id', 'razorpay_key_secret']),
+  vendorController.updateGatewayCredentials
+);
+
+// NEW: Annual SaaS Billing Payment via Platform Razorpay
+router.get('/annualBillingStatus', vendorController.getAnnualBillingStatus);
+router.post(
+  '/createAnnualBillingOrder',
+  validateRequired(['billing_id']),
+  vendorController.createAnnualBillingOrder
+);
+router.post(
+  '/verifyAnnualBillingPayment',
+  validateRequired(['billing_id', 'razorpay_order_id', 'razorpay_payment_id', 'razorpay_signature']),
+  vendorController.verifyAnnualBillingPayment
+);
+
+// Store-Level Coupons
+router.get('/coupons', vendorController.getMyCoupons);
+router.post(
+  '/createCoupon',
+  validateRequired(['code', 'discount_value']),
+  vendorController.createCoupon
+);
+router.put('/toggleCoupon/:id', vendorController.toggleCouponStatus);
+router.delete('/deleteCoupon/:id', vendorController.deleteCoupon);
+
+// Profile
 router.get('/myProfile', userController.getMyProfile);
 router.put('/myProfile', userController.updateMyProfile);
-
-router.post('/verifyHandoverOtp', validateRequired(['order_id', 'otp']), vendorController.verifyHandoverOtp );
 
 module.exports = router;

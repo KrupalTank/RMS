@@ -77,20 +77,24 @@ exports.submitKyc = async (req, res) => {
   }
 };
 
-// GET /api/v1/rms/user/myProfile
+// In controllers/userController.js:
+
 // GET /api/v1/rms/user/myProfile
 exports.getMyProfile = async (req, res) => {
   try {
     const userId = req.user.id;
     const result = await pool.query(
-      `SELECT id, full_name, email, phone, role, kyc_status, 
-              address, city, pincode, bank_account_no, bank_ifsc 
-       FROM users WHERE id = $1`,
+      `SELECT id, full_name, email, phone, role, kyc_status, is_blocked, 
+              late_returns_count, address, city, pincode, 
+              subscription_start_date, subscription_renewal_date,
+              (razorpay_key_id IS NOT NULL AND razorpay_key_secret IS NOT NULL) AS has_payment_gateway
+       FROM users 
+       WHERE id = $1`,
       [userId]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'User not found.' });
+      return res.status(404).json({ success: false, message: 'User profile not found.' });
     }
 
     return res.status(200).json({ success: true, user: result.rows[0] });
@@ -104,10 +108,7 @@ exports.getMyProfile = async (req, res) => {
 exports.updateMyProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { full_name, phone, address, city, pincode, bank_account_no, bank_ifsc } = req.body;
-
-    const cleanBankAcc = bank_account_no && bank_account_no.trim() !== '' ? bank_account_no.trim() : null;
-    const cleanIfsc = bank_ifsc && bank_ifsc.trim() !== '' ? bank_ifsc.trim().toUpperCase() : null;
+    const { full_name, phone, address, city, pincode } = req.body;
 
     const result = await pool.query(
       `UPDATE users 
@@ -116,12 +117,12 @@ exports.updateMyProfile = async (req, res) => {
            address = COALESCE($3, address),
            city = COALESCE($4, city),
            pincode = COALESCE($5, pincode),
-           bank_account_no = COALESCE($6, bank_account_no),
-           bank_ifsc = COALESCE($7, bank_ifsc),
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $8
-       RETURNING id, full_name, email, phone, role, kyc_status, address, city, pincode, bank_account_no, bank_ifsc`,
-      [full_name, phone, address, city, pincode, bank_account_no, bank_ifsc, userId]
+       WHERE id = $6
+       RETURNING id, full_name, email, phone, role, kyc_status, is_blocked, 
+                 late_returns_count, address, city, pincode,
+                 subscription_start_date, subscription_renewal_date`,
+      [full_name, phone, address, city, pincode, userId]
     );
 
     return res.status(200).json({
@@ -135,7 +136,7 @@ exports.updateMyProfile = async (req, res) => {
   }
 };
 
-// GET /api/v1/rms/user/getProducts (Prioritizes user's city)
+// GET /api/v1/rms/user/getProducts (Prioritizes user's city, filters active vendors only)
 exports.getProducts = async (req, res) => {
   try {
     const userCity = req.user.city || '';
@@ -146,6 +147,18 @@ exports.getProducts = async (req, res) => {
       LEFT JOIN categories c ON p.category_id = c.id
       JOIN users u ON p.vendor_id = u.id
       WHERE p.total_quantity > 0
+        AND u.is_blocked = FALSE
+        AND (
+          u.subscription_renewal_date >= CURRENT_DATE 
+          OR NOT EXISTS (
+            SELECT 1 FROM vendor_annual_billing vab 
+            WHERE vab.vendor_id = u.id 
+              AND vab.payment_status IN ('PENDING', 'OVERDUE') 
+              AND CURRENT_DATE > (vab.period_end + INTERVAL '3 days')
+          )
+        )
+        AND u.razorpay_key_id IS NOT NULL
+        AND u.razorpay_key_secret IS NOT NULL
       ORDER BY (CASE WHEN LOWER(u.city) = LOWER($1) THEN 0 ELSE 1 END), p.created_at DESC
     `;
 
@@ -168,7 +181,20 @@ exports.getProductsByCategory = async (req, res) => {
       FROM products p
       JOIN categories c ON p.category_id = c.id
       JOIN users u ON p.vendor_id = u.id
-      WHERE (LOWER(c.name) = LOWER($1) OR c.id::TEXT = $1) AND p.total_quantity > 0
+      WHERE (LOWER(c.name) = LOWER($1) OR c.id::TEXT = $1)
+        AND p.total_quantity > 0
+        AND u.is_blocked = FALSE
+        AND (
+          u.subscription_renewal_date >= CURRENT_DATE 
+          OR NOT EXISTS (
+            SELECT 1 FROM vendor_annual_billing vab 
+            WHERE vab.vendor_id = u.id 
+              AND vab.payment_status IN ('PENDING', 'OVERDUE') 
+              AND CURRENT_DATE > (vab.period_end + INTERVAL '3 days')
+          )
+        )
+        AND u.razorpay_key_id IS NOT NULL
+        AND u.razorpay_key_secret IS NOT NULL
       ORDER BY (CASE WHEN LOWER(u.city) = LOWER($2) THEN 0 ELSE 1 END), p.created_at DESC
     `;
 
@@ -191,7 +217,20 @@ exports.searchProducts = async (req, res) => {
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
       JOIN users u ON p.vendor_id = u.id
-      WHERE (p.title ILIKE $1 OR p.description ILIKE $1) AND p.total_quantity > 0
+      WHERE (p.title ILIKE $1 OR p.description ILIKE $1)
+        AND p.total_quantity > 0
+        AND u.is_blocked = FALSE
+        AND (
+          u.subscription_renewal_date >= CURRENT_DATE 
+          OR NOT EXISTS (
+            SELECT 1 FROM vendor_annual_billing vab 
+            WHERE vab.vendor_id = u.id 
+              AND vab.payment_status IN ('PENDING', 'OVERDUE') 
+              AND CURRENT_DATE > (vab.period_end + INTERVAL '3 days')
+          )
+        )
+        AND u.razorpay_key_id IS NOT NULL
+        AND u.razorpay_key_secret IS NOT NULL
       ORDER BY (CASE WHEN LOWER(u.city) = LOWER($2) THEN 0 ELSE 1 END), p.created_at DESC
     `;
 
@@ -203,8 +242,6 @@ exports.searchProducts = async (req, res) => {
   }
 };
 
-// GET /api/v1/rms/user/getProduct/:id
-// In controllers/userController.js
 // GET /api/v1/rms/user/getProduct/:id
 exports.getProductById = async (req, res) => {
   try {
@@ -218,7 +255,17 @@ exports.getProductById = async (req, res) => {
              u.phone AS vendor_phone, 
              u.address AS vendor_address, 
              u.city AS vendor_city, 
-             u.pincode AS vendor_pincode
+             u.pincode AS vendor_pincode,
+             u.is_blocked AS vendor_blocked,
+             u.subscription_renewal_date AS vendor_renewal_date,
+             (u.razorpay_key_id IS NOT NULL AND u.razorpay_key_secret IS NOT NULL) AS vendor_has_gateway,
+             (
+               SELECT COUNT(*)::INT 
+               FROM vendor_annual_billing vab 
+               WHERE vab.vendor_id = u.id 
+                 AND vab.payment_status IN ('PENDING', 'OVERDUE')
+                 AND CURRENT_DATE > (vab.period_end + INTERVAL '3 days')
+             ) AS overdue_bills_past_grace
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
       JOIN users u ON p.vendor_id = u.id
@@ -232,7 +279,31 @@ exports.getProductById = async (req, res) => {
 
     const rawProduct = productRes.rows[0];
 
-    // Check if requester has a paid/confirmed booking for this product
+    // 1. Vendor suspended by admin
+    if (rawProduct.vendor_blocked) {
+      return res.status(403).json({
+        success: false,
+        message: 'This vendor account is currently suspended.',
+      });
+    }
+
+    // 2. Gateway not configured
+    if (!rawProduct.vendor_has_gateway) {
+      return res.status(403).json({
+        success: false,
+        message: 'This vendor has not yet activated their direct payment gateway.',
+      });
+    }
+
+    // 3. Pause store ONLY if unpaid annual bill is past the 3-day grace period
+    if (parseInt(rawProduct.overdue_bills_past_grace, 10) > 0) {
+      return res.status(403).json({
+        success: false,
+        message: 'This vendor store is temporarily paused for annual licensing renewal. Please check back later.',
+      });
+    }
+
+    // Check confirmed booking for unmasking contact details
     let hasConfirmedOrder = false;
     if (currentUserId) {
       const orderCheck = await pool.query(
@@ -246,19 +317,13 @@ exports.getProductById = async (req, res) => {
       hasConfirmedOrder = orderCheck.rows.length > 0;
     }
 
-    // Mask direct contact details prior to confirmed booking
     const sanitizedProduct = {
       ...rawProduct,
-      vendor_phone: hasConfirmedOrder
-        ? rawProduct.vendor_phone
-        : null,
-      vendor_address: hasConfirmedOrder
-        ? rawProduct.vendor_address
-        : null,
+      vendor_phone: hasConfirmedOrder ? rawProduct.vendor_phone : null,
+      vendor_address: hasConfirmedOrder ? rawProduct.vendor_address : null,
       is_contact_masked: !hasConfirmedOrder,
     };
 
-    // Fetch product reviews
     const reviewsQuery = `
       SELECT r.id, r.rating, r.comment, r.created_at, u.full_name AS customer_name
       FROM reviews r
@@ -419,5 +484,39 @@ exports.getProductAvailability = async (req, res) => {
   } catch (error) {
     console.error('Get Product Availability Error:', error);
     return res.status(500).json({ success: false, message: 'Failed to calculate product availability.' });
+  }
+};
+
+// GET /api/v1/rms/user/storeCoupons/:vendorId
+exports.getStoreCoupons = async (req, res) => {
+  try {
+    const customerId = req.user?.id || null;
+    const { vendorId } = req.params;
+
+    const query = `
+      SELECT sc.id, sc.vendor_id, sc.code, sc.discount_type, sc.discount_value, 
+             sc.max_discount_amount, sc.min_order_amount, sc.min_rental_days, sc.product_id,
+             sc.valid_until
+      FROM store_coupons sc
+      WHERE sc.vendor_id = $1 
+        AND sc.is_active = TRUE
+        AND sc.is_archived = FALSE
+        AND (sc.valid_until IS NULL OR sc.valid_until::DATE >= CURRENT_DATE)
+        AND (sc.max_uses IS NULL OR sc.used_count < sc.max_uses)
+        AND (
+          $2::INT IS NULL OR (
+            SELECT COUNT(*)::INT 
+            FROM coupon_redemptions cr 
+            WHERE cr.coupon_id = sc.id AND cr.customer_id = $2
+          ) < sc.per_user_limit
+        )
+      ORDER BY sc.discount_value DESC
+    `;
+
+    const result = await pool.query(query, [vendorId, customerId]);
+    return res.status(200).json({ success: true, coupons: result.rows });
+  } catch (error) {
+    console.error('Get Store Coupons Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch store coupons.' });
   }
 };

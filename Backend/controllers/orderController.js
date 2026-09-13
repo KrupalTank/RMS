@@ -1,7 +1,30 @@
 // controllers/orderController.js
+const Razorpay = require('razorpay');
 const pool = require('../config/db');
+const { decryptText } = require('../utils/encryptionUtil');
 const { sendCustomerCancellationEmail, sendVendorCancellationEmail } = require('../services/emailService');
 const { generateRentalAgreementPDF } = require('../utils/pdfGenerator');
+
+// Helper to instantiate vendor's Razorpay instance
+async function getVendorRazorpayClient(vendorId, client = pool) {
+  const vendorRes = await client.query(
+    'SELECT id, full_name, razorpay_key_id, razorpay_key_secret FROM users WHERE id = $1',
+    [vendorId]
+  );
+  if (vendorRes.rows.length === 0) throw new Error('Vendor account not found.');
+  const vendor = vendorRes.rows[0];
+  if (!vendor.razorpay_key_id || !vendor.razorpay_key_secret) {
+    throw new Error(`Vendor "${vendor.full_name}" has not configured their Razorpay payment gateway.`);
+  }
+  return {
+    instance: new Razorpay({
+      key_id: vendor.razorpay_key_id,
+      key_secret: decryptText(vendor.razorpay_key_secret),
+    }),
+    key_id: vendor.razorpay_key_id,
+    vendor_name: vendor.full_name,
+  };
+}
 
 // GET /api/v1/rms/user/getOrders
 exports.getCustomerOrders = async (req, res) => {
@@ -31,73 +54,6 @@ exports.getCustomerOrders = async (req, res) => {
   }
 };
 
-// POST /api/v1/rms/user/changeOrderStatus
-exports.confirmOrderReceived = async (req, res) => {
-  try {
-    const customerId = req.user.id;
-    const { order_id } = req.body;
-
-    // Check order status is Lock
-    const orderCheck = await pool.query(
-      'SELECT * FROM orders WHERE id = $1 AND customer_id = $2',
-      [order_id, customerId]
-    );
-
-    if (orderCheck.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Order not found.' });
-    }
-    
-    const order = orderCheck.rows[0];
-    if (order.status !== 'Lock') {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot confirm receipt. Order must be in 'Lock' status (Current: '${order.status}').`,
-      });
-    }
-
-    // Update status to 'With Customer'
-    // NOTE: Database trigger 'trg_handle_order_handover_payout' automatically generates
-    // the rent payout ledger to the vendor and sets payment_status = 'Partial'!
-    const result = await pool.query(
-      `UPDATE orders 
-       SET status = 'With Customer' 
-       WHERE id = $1 
-       RETURNING *`,
-      [order_id]
-    );
-
-    // Emit real-time notification
-    // In controllers/orderController.js -> confirmOrderReceived
-    const io = req.app.get('socketio');
-    if (io) {
-      const numericOrderId = parseInt(order_id, 10);
-
-      io.emit('ORDER_STATUS_CHANGED', {
-        orderId: numericOrderId,
-        newStatus: 'With Customer',
-        vendorId: order.vendor_id,
-        customerId: req.user.id,
-      });
-
-      io.emit('PAYOUT_GENERATED', {
-        orderId: numericOrderId,
-        vendorId: order.vendor_id,
-        type: 'rent_handover',
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: 'Product receipt confirmed. Order marked as With Customer.',
-      order: result.rows[0],
-    });
-  } catch (error) {
-    console.error('Confirm Order Received Error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to confirm receipt.' });
-  }
-};
-
-
 // POST /api/v1/rms/user/cancelOrder
 exports.cancelOrder = async (req, res) => {
   const client = await pool.connect();
@@ -107,7 +63,10 @@ exports.cancelOrder = async (req, res) => {
 
     // 1. Fetch order and ensure it belongs to customer and is in 'Lock' status
     const orderCheck = await client.query(
-      'SELECT * FROM orders WHERE id = $1 AND customer_id = $2',
+      `SELECT o.*, po.razorpay_payment_id 
+       FROM orders o
+       JOIN parent_order po ON o.group_id = po.id
+       WHERE o.id = $1 AND o.customer_id = $2`,
       [order_id, customerId]
     );
 
@@ -125,21 +84,47 @@ exports.cancelOrder = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // 2. Update status to Cancelled and set cancelled_by = 'customer'
-    // NOTE: Database trigger 'trg_handle_order_handover_payout' will automatically branch
-    // and generate the two payout slips (vendor fee + customer refund)!
+    // 2. Financial calculation for customer cancellation
+    const grossRent = parseFloat(order.gross_rent_snapshot || 0);
+    const discountAmount = parseFloat(order.discount_amount_snapshot || 0);
+    const actualPaidRent = parseFloat(order.customer_paid_rent_snapshot || (grossRent - discountAmount));
+    const totalDeposit = parseFloat(order.deposit_per_item_snapshot) * order.quantity;
+    const feePerUnit = parseFloat(order.cancellation_fee_snapshot || 0);
+    const cancellationFeeDeducted = Math.min(feePerUnit * order.quantity, totalDeposit);
+    const refundAmount = actualPaidRent + (totalDeposit - cancellationFeeDeducted);
+
+    let refundReference = 'CANCEL_DIRECT_REFUND';
+
+    // 3. Initiate dynamic partial refund via vendor's Razorpay
+    if (order.razorpay_payment_id && refundAmount > 0) {
+      try {
+        const vendorGateway = await getVendorRazorpayClient(order.vendor_id, client);
+        const rzpRefund = await vendorGateway.instance.payments.refund(order.razorpay_payment_id, {
+          amount: Math.round(refundAmount * 100),
+          notes: { reason: `Customer cancellation refund for Order #${order.id}` },
+        });
+        refundReference = rzpRefund.id;
+      } catch (refundErr) {
+        console.error('Vendor Gateway Cancellation Refund Warning:', refundErr.message);
+      }
+    }
+
+    // 4. Update order record
     const updateRes = await client.query(
       `UPDATE orders 
        SET status = 'Cancelled', 
-           cancelled_by = 'customer' 
-       WHERE id = $1 
+           cancelled_by = 'customer',
+           payment_status = 'Refunded_Full',
+           deposit_refunded_amount = $1,
+           deposit_refund_reference = $2
+       WHERE id = $3 
        RETURNING *`,
-      [order_id]
+      [refundAmount, refundReference, order_id]
     );
 
     await client.query('COMMIT');
 
-    // 3. Emit real-time WebSocket updates
+    // 5. Emit real-time WebSocket updates
     const io = req.app.get('socketio');
     if (io) {
       io.emit('ORDER_STATUS_CHANGED', {
@@ -148,41 +133,24 @@ exports.cancelOrder = async (req, res) => {
         vendorId: order.vendor_id,
         newStatus: 'Cancelled',
       });
-
-      io.emit('PAYOUT_GENERATED', {
-        orderId: order_id,
-        customerId,
-        type: 'cancellation_refund_customer',
-      });
     }
 
-
-    // Fetch order, product, customer & vendor details for notification
-
+    // 6. Fetch details for notification emails
     const emailDetailsRes = await pool.query(
       `SELECT o.*, p.title AS product_title,
               c.full_name AS customer_name, c.email AS customer_email,
               v.full_name AS vendor_name, v.email AS vendor_email
-      FROM orders o
-      JOIN products p ON o.product_id = p.id
-      JOIN users c ON o.customer_id = c.id
-      JOIN users v ON o.vendor_id = v.id
-      WHERE o.id = $1`,
+       FROM orders o
+       JOIN products p ON o.product_id = p.id
+       JOIN users c ON o.customer_id = c.id
+       JOIN users v ON o.vendor_id = v.id
+       WHERE o.id = $1`,
       [order_id]
     );
 
     if (emailDetailsRes.rows.length > 0) {
       const d = emailDetailsRes.rows[0];
 
-      const grossRent = parseFloat(d.gross_rent_snapshot || 0);
-      const discountAmount = parseFloat(d.discount_amount_snapshot || 0);
-      const actualPaidRent = parseFloat(d.customer_paid_rent_snapshot || (grossRent - discountAmount));
-      const totalDeposit = parseFloat(d.deposit_per_item_snapshot) * d.quantity;
-      const feePerUnit = parseFloat(d.cancellation_fee_snapshot || 0);
-      const cancellationFeeDeducted = Math.min(feePerUnit * d.quantity, totalDeposit);
-      const refundAmount = actualPaidRent + (totalDeposit - cancellationFeeDeducted);
-
-      // 1. Email Customer
       sendCustomerCancellationEmail({
         to: d.customer_email,
         customerName: d.customer_name,
@@ -197,7 +165,6 @@ exports.cancelOrder = async (req, res) => {
         refundAmount,
       });
 
-      // 2. Email Vendor
       sendVendorCancellationEmail({
         to: d.vendor_email,
         vendorName: d.vendor_name,
@@ -210,7 +177,7 @@ exports.cancelOrder = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: 'Booking cancelled successfully. Refund and settlement payouts have been recorded.',
+      message: 'Booking cancelled successfully. Refund processed directly to your payment account.',
       order: updateRes.rows[0],
     });
   } catch (error) {
@@ -229,7 +196,6 @@ exports.downloadRentalAgreement = async (req, res) => {
     const userRole = req.user.role;
     const { groupId } = req.params;
 
-    // 1. Fetch group orders and check permissions (Customer or Vendor involved)
     const subOrdersRes = await pool.query(
       `SELECT o.*, p.title AS product_title, 
               u.full_name AS vendor_name, u.city AS vendor_city, u.phone AS vendor_phone, u.address AS vendor_address
@@ -248,7 +214,6 @@ exports.downloadRentalAgreement = async (req, res) => {
     const subOrders = subOrdersRes.rows;
     const customerId = subOrders[0].customer_id;
 
-    // Check authorization: caller must be customer, one of the vendors, or admin
     const isCustomer = userId === customerId;
     const isVendor = subOrders.some((o) => o.vendor_id === userId);
     const isAdmin = userRole === 'admin';
@@ -257,14 +222,12 @@ exports.downloadRentalAgreement = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized to download this rental agreement.' });
     }
 
-    // 2. Fetch Customer Details
     const customerRes = await pool.query(
       'SELECT id, full_name, email, phone, city, kyc_status FROM users WHERE id = $1',
       [customerId]
     );
     const customer = customerRes.rows[0];
 
-    // 3. Generate PDF Stream
     const pdfBuffer = await generateRentalAgreementPDF({
       customer,
       parentOrder: { group_id: groupId },

@@ -19,15 +19,17 @@ async function sendBookingConfirmationEmail({ customer, parentOrder, subOrders, 
       to: customer.email,
       subject: `Order Confirmation & Receipt - #${parentOrder.group_id}`,
       html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <h2 style="color: #2563EB;">Your Rental Booking is Confirmed!</h2>
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 24px;">
+          <h2 style="color: #2563EB; margin-top: 0;">Your Rental Booking is Confirmed!</h2>
           <p>Hi <b>${customer.full_name}</b>,</p>
-          <p>Thank you for renting with us. Your payment has been verified, and your items are now reserved.</p>
-          <p><b>Group Order ID:</b> #${parentOrder.group_id}<br/>
-             <b>Payment Reference:</b> ${paymentDetails.razorpay_payment_id}</p>
-          <p>Please find your detailed tax & escrow deposit invoice attached to this email.</p>
-          <hr style="border: none; border-top: 1px solid #eee;" />
-          <p style="font-size: 12px; color: #777;">Rental Management System Support Team</p>
+          <p>Thank you for renting with us. Your payment has been verified directly with the vendor, and your equipment is now locked for pickup.</p>
+          <div style="background-color: #F3F4F6; padding: 15px; border-radius: 6px; margin: 15px 0;">
+            <p style="margin: 4px 0;"><b>Group Booking ID:</b> #${parentOrder.group_id}</p>
+            <p style="margin: 4px 0;"><b>Payment Reference:</b> <code>${paymentDetails.razorpay_payment_id}</code></p>
+          </div>
+          <p>Your detailed tax invoice and security deposit receipt are attached below.</p>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
+          <p style="font-size: 12px; color: #777;">Rental Management System Team</p>
         </div>
       `,
       attachments: [
@@ -47,60 +49,174 @@ async function sendBookingConfirmationEmail({ customer, parentOrder, subOrders, 
 }
 
 /**
- * 2. Sends Payout Settlement slip to Vendor or Customer
+ * 2. NEW: Sends Instant Booking & Payment Notification to Vendor
  */
-async function sendPayoutSettlementEmail({ recipient, payout, orderDetails }) {
+async function sendVendorBookingNotificationEmail({ vendor, customer, parentOrder, subOrders, paymentDetails }) {
   try {
-    const pdfBuffer = await generatePayoutSlipPDF({
-      recipient,
-      payout,
-      orderDetails,
-    });
+    const totalRent = subOrders.reduce((sum, o) => sum + parseFloat(o.customer_paid_rent_snapshot || 0), 0);
+    const totalDeposit = subOrders.reduce((sum, o) => sum + (parseFloat(o.deposit_per_item_snapshot || 0) * o.quantity), 0);
+    const totalCollected = totalRent + totalDeposit;
 
-    const isCustomerRefund =
-      payout.type === 'deposit_refund' ||
-      payout.type === 'full_refund' ||
-      payout.type === 'cancellation_refund_customer';
-
-    const subject = isCustomerRefund
-      ? `Refund Settlement Disbursed - Order #${payout.order_id}`
-      : `Disbursal Settlement Disbursed - Order #${payout.order_id}`;
+    const itemsHtml = subOrders
+      .map(
+        (o) => `
+        <tr style="border-bottom: 1px solid #E5E7EB;">
+          <td style="padding: 8px 0;"><b>${o.product_title || 'Equipment'}</b> (Qty: ${o.quantity})</td>
+          <td style="padding: 8px 0; text-align: center;">${new Date(o.start_date).toLocaleDateString()} to ${new Date(o.end_date).toLocaleDateString()}</td>
+          <td style="padding: 8px 0; text-align: right;">₹${parseFloat(o.customer_paid_rent_snapshot || 0).toFixed(2)}</td>
+        </tr>
+      `
+      )
+      .join('');
 
     const mailOptions = {
       from: process.env.EMAIL_FROM,
-      to: recipient.email,
-      subject,
+      to: vendor.email,
+      subject: `🎉 New Direct Booking Received! - Order Group #${parentOrder.group_id}`,
       html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-          <h2 style="color: #059669;">Payment Disbursed Successfully</h2>
-          <p>Hi <b>${recipient.full_name}</b>,</p>
-          <p>A payment of <b>₹${parseFloat(payout.amount).toFixed(2)}</b> has been settled and transferred.</p>
-          <p><b>Transaction Reference:</b> ${payout.gateway_reference_id}<br/>
-             <b>Order ID:</b> #${payout.order_id}<br/>
-             <b>Payment Type:</b> ${payout.type.toUpperCase()}</p>
-          <p>Your official settlement slip is attached below.</p>
-          <hr style="border: none; border-top: 1px solid #eee;" />
-          <p style="font-size: 12px; color: #777;">Rental Management System Accounts Team</p>
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 24px;">
+          <h2 style="color: #059669; margin-top: 0;">New Rental Order & Direct Payment Received!</h2>
+          <p>Hi <b>${vendor.full_name}</b>,</p>
+          <p>Great news! A customer has reserved equipment from your store and completed direct payment to your Razorpay gateway account.</p>
+
+          <div style="background-color: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 6px; padding: 15px; margin: 15px 0;">
+            <p style="margin: 4px 0; color: #065F46;"><b>Total Collected to Your Gateway:</b> <span style="font-size: 16px; font-weight: bold;">₹${totalCollected.toFixed(2)}</span></p>
+            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• Net Rent: ₹${totalRent.toFixed(2)} | • Refundable Security Deposit: ₹${totalDeposit.toFixed(2)}</p>
+            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• Payment ID: <code>${paymentDetails.razorpay_payment_id}</code></p>
+          </div>
+
+          <div style="background-color: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; padding: 15px; margin: 15px 0; font-size: 13px;">
+            <h4 style="margin: 0 0 8px 0; color: #374151;">Customer Details:</h4>
+            <p style="margin: 2px 0;"><b>Name:</b> ${customer.full_name}</p>
+            <p style="margin: 2px 0;"><b>Phone:</b> ${customer.phone || 'N/A'}</p>
+            <p style="margin: 2px 0;"><b>Email:</b> ${customer.email}</p>
+          </div>
+
+          <h4 style="margin: 15px 0 8px 0; font-size: 13px; color: #374151;">Reserved Equipment:</h4>
+          <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+            <thead>
+              <tr style="border-bottom: 2px solid #E5E7EB; text-align: left; color: #6B7280;">
+                <th style="padding: 6px 0;">Item</th>
+                <th style="padding: 6px 0; text-align: center;">Duration</th>
+                <th style="padding: 6px 0; text-align: right;">Rent</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${itemsHtml}
+            </tbody>
+          </table>
+
+          <div style="margin-top: 20px; padding: 12px; background-color: #EFF6FF; border-radius: 6px; font-size: 12px; color: #1E40AF;">
+            <b>Next Step:</b> Verify the customer's 6-digit Handshake PIN in your Vendor Dashboard before physically handing over the equipment.
+          </div>
+
+          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 20px 0;" />
+          <p style="font-size: 12px; color: #6B7280; text-align: center;">Rental Management System Vendor Operations</p>
         </div>
       `,
-      attachments: [
-        {
-          filename: `Payout_Slip_${payout.id}.pdf`,
-          content: pdfBuffer,
-          contentType: 'application/pdf',
-        },
-      ],
     };
 
     await transporter.sendMail(mailOptions);
-    console.log(`📧 Payout settlement slip sent to ${recipient.email}`);
+    console.log(`📧 Vendor booking notice sent to ${vendor.email}`);
   } catch (error) {
-    console.error('⚠️ Failed to send payout settlement email:', error.message);
+    console.error('⚠️ Failed to send vendor booking email:', error.message);
   }
 }
 
 /**
- * 3. Sends Welcome Email on Successful Signup
+ * 3. NEW: Sends Customer Return Inspection & Deposit Refund Settlement Slip
+ */
+async function sendDepositRefundSettlementEmail({
+  to,
+  customerName,
+  vendorName,
+  orderId,
+  productTitle,
+  totalDeposit,
+  lateFeeDeducted = 0,
+  refundedAmount,
+  refundReference,
+  isDamaged = false,
+}) {
+  try {
+    const isFullForfeiture = parseFloat(refundedAmount) <= 0;
+
+    const mailOptions = {
+      from: process.env.EMAIL_FROM,
+      to,
+      subject: `Return Settlement & Deposit Receipt - Order #${orderId}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 24px;">
+          <h2 style="color: ${isFullForfeiture ? '#DC2626' : '#059669'}; margin-top: 0;">
+            ${isFullForfeiture ? 'Deposit Forfeiture Notice' : 'Security Deposit Refund Processed'}
+          </h2>
+          <p>Hi <b>${customerName}</b>,</p>
+          <p>Vendor <b>${vendorName}</b> has inspected and finalized the return of <b>${productTitle}</b> (Order #${orderId}).</p>
+
+          <div style="background-color: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 8px; padding: 16px; margin: 20px 0;">
+            <h4 style="margin: 0 0 12px 0; color: #374151; font-size: 13px; border-bottom: 1px solid #E5E7EB; padding-bottom: 8px;">
+              Deposit Settlement Breakdown
+            </h4>
+            <table style="width: 100%; font-size: 13px; color: #4B5563; border-collapse: collapse;">
+              <tr>
+                <td style="padding: 4px 0;">Original Security Deposit:</td>
+                <td style="text-align: right; font-weight: bold; color: #1F2937;">₹${parseFloat(totalDeposit).toFixed(2)}</td>
+              </tr>
+              ${
+                lateFeeDeducted > 0
+                  ? `<tr>
+                      <td style="padding: 4px 0; color: #DC2626;">Late Return Fee Deducted:</td>
+                      <td style="text-align: right; font-weight: bold; color: #DC2626;">- ₹${parseFloat(lateFeeDeducted).toFixed(2)}</td>
+                    </tr>`
+                  : ''
+              }
+              ${
+                isDamaged
+                  ? `<tr>
+                      <td style="padding: 4px 0; color: #DC2626;">Damage Repair Deduction:</td>
+                      <td style="text-align: right; font-weight: bold; color: #DC2626;">- ₹${parseFloat(totalDeposit).toFixed(2)}</td>
+                    </tr>`
+                  : ''
+              }
+              <tr style="border-top: 1px solid #E5E7EB;">
+                <td style="padding: 10px 0 0 0; font-weight: bold; color: #059669; font-size: 14px;">Total Refund Disbursed to You:</td>
+                <td style="padding: 10px 0 0 0; text-align: right; font-weight: bold; color: #059669; font-size: 16px;">
+                  ₹${parseFloat(refundedAmount).toFixed(2)}
+                </td>
+              </tr>
+            </table>
+          </div>
+
+          ${
+            !isFullForfeiture
+              ? `
+          <div style="background-color: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 6px; padding: 12px; margin: 15px 0; font-size: 12px; color: #065F46;">
+            <b>Refund Reference / Transaction ID:</b> <code>${refundReference || 'PROCESSED_DIRECTLY'}</code><br/>
+            <span style="font-size: 11px; color: #047857;">If refunded via Razorpay API, funds reflect in your source account within standard banking windows. If settled offline via UPI/Cash, please verify the reference provided above.</span>
+          </div>
+          `
+              : `
+          <div style="background-color: #FEF2F2; border: 1px solid #FEE2E2; border-radius: 6px; padding: 12px; margin: 15px 0; font-size: 12px; color: #991B1B;">
+            The security deposit was retained to cover repair/replacement costs as per store terms.
+          </div>
+          `
+          }
+
+          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 20px 0;" />
+          <p style="font-size: 12px; color: #6B7280; text-align: center;">Rental Management System Accounts & Settlement</p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log(`📧 Deposit refund email sent to ${to}`);
+  } catch (error) {
+    console.error('⚠️ Failed to send deposit refund settlement email:', error.message);
+  }
+}
+
+/**
+ * 4. Sends Welcome Email on Successful Signup
  */
 async function sendWelcomeEmail({ user }) {
   try {
@@ -131,10 +247,10 @@ async function sendWelcomeEmail({ user }) {
             isVendor
               ? `
           <div style="background-color: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 6px; padding: 16px; margin: 20px 0;">
-            <h4 style="margin: 0 0 8px 0; color: #065F46; font-size: 14px;">📜 Partner Commission & Settlement Agreement</h4>
-            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>10% Platform Commission:</b> Deducted from gross rental income upon product handover to customer.</p>
-            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>90% Net Payout:</b> Transferred directly to your registered bank account via electronic transfer.</p>
-            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>0% Escrow Fee:</b> Customer security deposits are 100% untouched and protected in platform escrow.</p>
+            <h4 style="margin: 0 0 8px 0; color: #065F46; font-size: 14px;">📜 Partner Software & Annual Licensing Agreement</h4>
+            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>Direct Customer Payments:</b> 100% of customer rental fees and security deposits land directly into your own Razorpay account instantly.</p>
+            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>0% Per-Order Commission:</b> The platform never takes transaction cuts from individual bookings.</p>
+            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>5% Annual Platform Royalty:</b> Billed annually based on your cumulative net rental earnings.</p>
           </div>
           `
               : '<p style="font-size: 13px; color: #4B5563;">Complete your KYC verification in your profile to enjoy lower security deposit requirements.</p>'
@@ -152,8 +268,9 @@ async function sendWelcomeEmail({ user }) {
     console.error('⚠️ Failed to send welcome email:', error.message);
   }
 }
+
 /**
- * 4. Sends KYC Submission Confirmation Email
+ * 5. Sends KYC Submission Confirmation Email
  */
 async function sendKycSubmissionEmail({ user, kycRequest }) {
   try {
@@ -189,7 +306,7 @@ async function sendKycSubmissionEmail({ user, kycRequest }) {
 }
 
 /**
- * 5. Sends KYC Decision Review Email (Verified or Rejected)
+ * 6. Sends KYC Decision Review Email (Verified or Rejected)
  */
 async function sendKycReviewEmail({ user, decision, rejectionReason }) {
   try {
@@ -236,7 +353,7 @@ async function sendKycReviewEmail({ user, decision, rejectionReason }) {
 }
 
 /**
- * 6. Sends Password Reset Email with Token Link
+ * 7. Sends Password Reset Email with Token Link
  */
 async function sendPasswordResetEmail({ user, resetUrl }) {
   try {
@@ -275,7 +392,7 @@ async function sendPasswordResetEmail({ user, resetUrl }) {
 }
 
 /**
- * 7. Sends Confirmation Notice on Successful Password Reset
+ * 8. Sends Confirmation Notice on Successful Password Reset
  */
 async function sendPasswordResetSuccessEmail({ user }) {
   try {
@@ -303,10 +420,8 @@ async function sendPasswordResetSuccessEmail({ user }) {
 }
 
 /**
- * 8. Sends Customer Cancellation & Refund Breakdown Email
+ * 9. Sends Customer Cancellation & Refund Breakdown Email
  */
-// Inside sendCustomerCancellationEmail in RMS/Backend/services/emailService.js
-
 async function sendCustomerCancellationEmail({
   to,
   customerName,
@@ -334,7 +449,7 @@ async function sendCustomerCancellationEmail({
           <p style="color: #9CA3AF;">Your booking for <b>${productTitle}</b> (Order #${orderId}) has been cancelled by ${isCancelledByCustomer ? 'you' : 'the vendor'}.</p>
           
           <div style="background-color: #1F2937; border: 1px solid #374151; border-radius: 8px; padding: 16px; margin: 20px 0;">
-            <h4 style="margin: 0 0 12px 0; color: #E5E7EB; font-size: 14px; border-bottom: 1px solid #374151; pb-2;">Refund & Deduction Breakdown</h4>
+            <h4 style="margin: 0 0 12px 0; color: #E5E7EB; font-size: 14px; border-bottom: 1px solid #374151; padding-bottom: 8px;">Refund & Deduction Breakdown</h4>
             
             <table style="width: 100%; font-size: 13px; color: #D1D5DB; border-collapse: collapse;">
               <tr>
@@ -344,17 +459,17 @@ async function sendCustomerCancellationEmail({
               ${
                 discountAmount > 0
                   ? `<tr>
-                      <td style="padding: 4px 0; color: #34D399;">Loyalty Voucher Applied:</td>
+                      <td style="padding: 4px 0; color: #34D399;">Store Promo Discount:</td>
                       <td style="text-align: right; font-weight: bold; color: #34D399;">- ₹${discountAmount.toFixed(2)}</td>
                     </tr>`
                   : ''
               }
               <tr>
-                <td style="padding: 4px 0;">Actual Rental Fee Paid (100% Refundable):</td>
+                <td style="padding: 4px 0;">Actual Rental Fee Paid:</td>
                 <td style="text-align: right; font-weight: bold; color: #F9FAFB;">₹${actualPaidRent.toFixed(2)}</td>
               </tr>
               <tr>
-                <td style="padding: 4px 0;">Security Escrow Deposit:</td>
+                <td style="padding: 4px 0;">Security Deposit:</td>
                 <td style="text-align: right; font-weight: bold; color: #F9FAFB;">₹${totalDeposit.toFixed(2)}</td>
               </tr>
               ${
@@ -372,7 +487,7 @@ async function sendCustomerCancellationEmail({
             </table>
           </div>
 
-          <p style="font-size: 12px; color: #9CA3AF;">Refunds are credited to your registered bank account via electronic transfer within standard banking windows.</p>
+          <p style="font-size: 12px; color: #9CA3AF;">Refunds are credited directly to your original payment method via the vendor's gateway.</p>
         </div>
       `,
     };
@@ -384,60 +499,7 @@ async function sendCustomerCancellationEmail({
 }
 
 /**
- * 9. Sends Vendor Cancellation Notice & Compensation Fee Notice
- */
-async function sendVendorCancellationEmail({
-  to,
-  vendorName,
-  productTitle,
-  orderId,
-  quantity,
-  cancellationCompensation,
-}) {
-  try {
-    const hasCompensation = parseFloat(cancellationCompensation) > 0;
-
-    const mailOptions = {
-      from: process.env.EMAIL_FROM,
-      to,
-      subject: `Order #${orderId} Cancelled by Customer - RMS`,
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 20px;">
-          <h2 style="color: #D97706; margin-top: 0;">Customer Cancelled Booking</h2>
-          <p>Hi <b>${vendorName}</b>,</p>
-          <p>The customer has cancelled their reservation for <b>${productTitle}</b> (Order <b>#${orderId}</b>, Quantity: <b>${quantity} unit(s)</b>).</p>
-          
-          <div style="background-color: #F9FAFB; padding: 15px; border-radius: 6px; margin: 20px 0; border: 1px solid #E5E7EB;">
-            <h4 style="margin-top: 0; color: #374151; border-bottom: 1px solid #E5E7EB; padding-bottom: 8px;">Inventory & Settlement Details</h4>
-            <p style="margin: 6px 0; font-size: 13px;"><b>Reserved Stock Released:</b> ${quantity} unit(s) are now back in your available inventory.</p>
-            ${
-              hasCompensation
-                ? `<p style="margin: 6px 0; font-size: 14px; font-weight: bold; color: #059669;"><b>Cancellation Fee Compensation to You:</b> ₹${parseFloat(cancellationCompensation).toFixed(2)}</p>`
-                : '<p style="margin: 6px 0; font-size: 13px; color: #6B7280;">No cancellation fee was configured for this product.</p>'
-            }
-          </div>
-
-          ${
-            hasCompensation
-              ? '<p style="font-size: 13px; color: #4B5563;">A payout ledger has been registered in the system to transfer this cancellation fee to your registered bank account.</p>'
-              : ''
-          }
-          
-          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 20px 0;" />
-          <p style="font-size: 12px; color: #6B7280; text-align: center;">Rental Management System Vendor Operations</p>
-        </div>
-      `,
-    };
-
-    await transporter.sendMail(mailOptions);
-    console.log(`📧 Vendor cancellation notice sent to ${to}`);
-  } catch (error) {
-    console.error('⚠️ Failed to send vendor cancellation notice email:', error.message);
-  }
-}
-
-/**
- * 10. Sends Security Deposit Forfeiture Email (Damaged Item or Expired Return)
+ * 10. Sends Security Deposit Forfeiture Email
  */
 async function sendDepositForfeitureEmail({
   to,
@@ -452,19 +514,19 @@ async function sendDepositForfeitureEmail({
     const mailOptions = {
       from: process.env.EMAIL_FROM,
       to,
-      subject: `Notice of Escrow Deposit Forfeiture - Order #${orderId}`,
+      subject: `Notice of Deposit Forfeiture - Order #${orderId}`,
       html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 20px;">
           <h2 style="color: #DC2626; margin-top: 0;">Security Deposit Forfeiture Notice</h2>
           <p>Hi <b>${customerName}</b>,</p>
-          <p>This email is to notify you regarding the security deposit for your rental of <b>${productTitle}</b> (Order <b>#${orderId}</b>) from vendor <b>${vendorName}</b>.</p>
+          <p>This email is regarding the security deposit for your rental of <b>${productTitle}</b> (Order <b>#${orderId}</b>) from <b>${vendorName}</b>.</p>
           
           <div style="background-color: #FEF2F2; padding: 15px; border-radius: 6px; margin: 20px 0; border: 1px solid #FEE2E2;">
             <p style="margin: 4px 0; color: #991B1B;"><b>Forfeited Deposit Amount:</b> <span style="font-size: 16px; font-weight: bold;">₹${parseFloat(forfeitedAmount).toFixed(2)}</span></p>
             <p style="margin: 4px 0; color: #991B1B;"><b>Reason:</b> ${reason}</p>
           </div>
 
-          <p style="font-size: 13px; color: #4B5563;">In accordance with our platform terms, the security deposit held in escrow has been transferred to the vendor to cover equipment replacement or repair costs.</p>
+          <p style="font-size: 13px; color: #4B5563;">In accordance with the vendor store terms, the deposit has been retained to cover equipment repairs or replacement.</p>
           
           <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 20px 0;" />
           <p style="font-size: 12px; color: #6B7280; text-align: center;">Rental Management System Trust & Safety</p>
@@ -480,7 +542,7 @@ async function sendDepositForfeitureEmail({
 }
 
 /**
- * 11. Sends Account Suspension Notice Email with Audit & Proof Breakdown
+ * 11. Sends Account Suspension Notice Email
  */
 async function sendAccountBlockedEmail({
   to,
@@ -507,10 +569,6 @@ async function sendAccountBlockedEmail({
             <p style="margin: 4px 0; color: #991B1B; font-size: 13px;">
               <b>Reason / Status:</b> ${reason || 'Account flagged for administrative or delinquency review.'}
             </p>
-            <p style="margin: 4px 0; color: #4B5563; font-size: 12px;">
-              • Active rentals currently in your possession remain valid for return as per scheduled end dates.<br/>
-              • New checkout requests are disabled.
-            </p>
           </div>
 
           ${
@@ -522,12 +580,8 @@ async function sendAccountBlockedEmail({
             </h4>
             <p style="margin: 4px 0; font-size: 13px;"><b>Group Order ID:</b> #${groupId || 'N/A'}</p>
             <p style="margin: 4px 0; font-size: 13px;"><b>Razorpay Payment ID:</b> <code>${paymentDetails.razorpay_payment_id || 'N/A'}</code></p>
-            <p style="margin: 4px 0; font-size: 13px;"><b>Razorpay Order ID:</b> <code>${paymentDetails.razorpay_order_id || 'N/A'}</code></p>
             <p style="margin: 4px 0; font-size: 14px; font-weight: bold; color: #059669;">
-              <b>100% Refund Disbursal Scheduled:</b> ₹${parseFloat(refundAmount || 0).toFixed(2)}
-            </p>
-            <p style="margin: 6px 0 0 0; font-size: 11px; color: #6B7280;">
-              Our automated payout ledger has scheduled a complete refund for this transaction.
+              <b>100% Refund Issued:</b> ₹${parseFloat(refundAmount || 0).toFixed(2)}
             </p>
           </div>
           `
@@ -536,8 +590,7 @@ async function sendAccountBlockedEmail({
 
           <div style="background-color: #F3F4F6; padding: 12px 15px; border-radius: 6px; border: 1px solid #E5E7EB; font-size: 13px;">
             <p style="margin: 0; color: #374151;">
-              <b>Need clarification or wish to resolve this suspension?</b><br/>
-              Contact our compliance representative directly at: 
+              Contact compliance directly at: 
               <a href="mailto:${contactEmail}" style="color: #2563EB; font-weight: bold; text-decoration: underline;">${contactEmail}</a>
             </p>
           </div>
@@ -556,58 +609,62 @@ async function sendAccountBlockedEmail({
 }
 
 /**
- * 12. Sends Milestone Reward Email when Customer Unlocks a 10% Discount Coupon Card
+ * Sends Vendor Cancellation Notice & Compensation Fee Notice
  */
-async function sendCouponUnlockedEmail({ to, userName, couponCode, discountPercent = 10 }) {
+async function sendVendorCancellationEmail({
+  to,
+  vendorName,
+  productTitle,
+  orderId,
+  quantity,
+  cancellationCompensation,
+}) {
   try {
+    const hasCompensation = parseFloat(cancellationCompensation) > 0;
+
     const mailOptions = {
       from: process.env.EMAIL_FROM,
       to,
-      subject: '🎉 Congratulations! You Unlocked a 10% Rental Privilege Voucher - RMS',
+      subject: `Order #${orderId} Cancelled by Customer - RMS`,
       html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 20px;">
-          <h2 style="color: #059669; margin-top: 0;">🎉 Loyalty Milestone Reached!</h2>
-          <p>Hi <b>${userName || 'Valued Renter'}</b>,</p>
-          <p>Thank you for being an outstanding member of the Rental Management System community. You have completed <b>8 consecutive on-time and undamaged returns</b>.</p>
+          <h2 style="color: #D97706; margin-top: 0;">Customer Cancelled Booking</h2>
+          <p>Hi <b>${vendorName || 'Vendor'}</b>,</p>
+          <p>The customer has cancelled their reservation for <b>${productTitle}</b> (Order <b>#${orderId}</b>, Quantity: <b>${quantity} unit(s)</b>).</p>
           
-          <div style="background: linear-gradient(135deg, #10B981 0%, #059669 100%); color: white; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-            <p style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: #D1FAE5;">Exclusive Privilege Card</p>
-            <h1 style="margin: 10px 0; font-size: 28px; letter-spacing: 2px;">${couponCode}</h1>
-            <p style="margin: 0; font-size: 15px; font-weight: bold;">${discountPercent}% OFF On Your Next Selected Rental Item</p>
+          <div style="background-color: #F9FAFB; padding: 15px; border-radius: 6px; margin: 20px 0; border: 1px solid #E5E7EB;">
+            <h4 style="margin-top: 0; color: #374151; border-bottom: 1px solid #E5E7EB; padding-bottom: 8px;">Inventory & Settlement Details</h4>
+            <p style="margin: 6px 0; font-size: 13px;"><b>Reserved Stock Released:</b> ${quantity} unit(s) have been returned to your available catalog stock.</p>
+            ${
+              hasCompensation
+                ? `<p style="margin: 6px 0; font-size: 14px; font-weight: bold; color: #059669;"><b>Cancellation Compensation Fee Retained:</b> ₹${parseFloat(cancellationCompensation).toFixed(2)}</p>`
+                : '<p style="margin: 6px 0; font-size: 13px; color: #6B7280;">No cancellation fee was configured for this product.</p>'
+            }
           </div>
 
-          <div style="background-color: #F9FAFB; padding: 15px; border-radius: 6px; border: 1px solid #E5E7EB; font-size: 13px;">
-            <p style="margin: 4px 0;"><b>How to redeem:</b></p>
-            <p style="margin: 4px 0; color: #4B5563;">• Add any item to your cart and proceed to checkout.</p>
-            <p style="margin: 4px 0; color: #4B5563;">• Toggle the <b>"Apply 10% Loyalty Coupon"</b> option on your preferred cart item.</p>
-            <p style="margin: 4px 0; color: #4B5563;">• Enjoy instant savings deducted directly from your rental subtotal.</p>
-          </div>
-          
-          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 20px 0;" />
-          <p style="font-size: 12px; color: #6B7280; text-align: center;">Rental Management System Loyalty Rewards</p>
+          <p style="font-size: 12px; color: #6B7280; text-align: center; margin-top: 20px;">Rental Management System Vendor Operations</p>
         </div>
       `,
     };
 
     await transporter.sendMail(mailOptions);
-    console.log(`📧 Milestone reward email sent to ${to}`);
+    console.log(`📧 Vendor cancellation notice sent to ${to}`);
   } catch (error) {
-    console.error('⚠️ Failed to send milestone reward email:', error.message);
+    console.error('⚠️ Failed to send vendor cancellation notice email:', error.message);
   }
 }
 
-
 module.exports = {
   sendBookingConfirmationEmail,
-  sendPayoutSettlementEmail,
+  sendVendorBookingNotificationEmail,
+  sendDepositRefundSettlementEmail,
   sendWelcomeEmail,
   sendKycSubmissionEmail,
   sendKycReviewEmail,
   sendPasswordResetEmail,
   sendPasswordResetSuccessEmail,
   sendCustomerCancellationEmail,
-  sendVendorCancellationEmail,
+  sendVendorCancellationEmail, // 👈 Make sure this is present
   sendDepositForfeitureEmail,
   sendAccountBlockedEmail,
-  sendCouponUnlockedEmail,
 };

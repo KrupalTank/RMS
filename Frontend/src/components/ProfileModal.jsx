@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '../api/axiosInstance';
 import { useAuth } from '../context/AuthContext';
-import { User, X, CheckCircle2, AlertCircle, RefreshCw, Award, Tag, Gift } from 'lucide-react';
+import { User, X, CheckCircle2, AlertCircle, RefreshCw, Shield, CreditCard, Calendar } from 'lucide-react';
 
 const ProfileModal = ({ isOpen, onClose }) => {
   const { user, login } = useAuth();
@@ -13,16 +13,13 @@ const ProfileModal = ({ isOpen, onClose }) => {
     address: '',
     city: '',
     pincode: '',
-    bank_account_no: '',
-    bank_ifsc: '',
   });
 
-  const [loyaltyData, setLoyaltyData] = useState({
-    coupons: [],
-    consecutive_good_returns: 0,
-    late_returns_count: 0,
-    milestone_target: 8,
-    contact_support_email: 'support@rms.com',
+  const [vendorSaaSData, setVendorSaaSData] = useState({
+    isConfigured: false,
+    key_id: null,
+    subscription_start_date: null,
+    subscription_renewal_date: null,
   });
 
   const [fetching, setFetching] = useState(false);
@@ -30,16 +27,16 @@ const ProfileModal = ({ isOpen, onClose }) => {
   const [status, setStatus] = useState({ success: '', error: '' });
 
   useEffect(() => {
-    const fetchFullProfileAndCoupons = async () => {
+    const fetchFullProfile = async () => {
       if (!isOpen) return;
 
       setFetching(true);
       setStatus({ success: '', error: '' });
 
       try {
-        const [profileRes, couponsRes] = await Promise.all([
+        const [profileRes, gatewayRes] = await Promise.all([
           api.get('/user/myProfile'),
-          user?.role === 'customer' ? api.get('/user/myCoupons') : Promise.resolve({ data: {} }),
+          user?.role === 'vendor' ? api.get('/vendor/gatewayStatus').catch(() => ({ data: {} })) : Promise.resolve({ data: {} }),
         ]);
 
         if (profileRes.data.success && profileRes.data.user) {
@@ -50,19 +47,11 @@ const ProfileModal = ({ isOpen, onClose }) => {
             address: u.address || '',
             city: u.city || '',
             pincode: u.pincode || '',
-            bank_account_no: u.bank_account_no || '',
-            bank_ifsc: u.bank_ifsc || '',
           });
         }
 
-        if (couponsRes.data?.success) {
-          setLoyaltyData({
-            coupons: couponsRes.data.coupons || [],
-            consecutive_good_returns: couponsRes.data.consecutive_good_returns || 0,
-            late_returns_count: couponsRes.data.late_returns_count || 0,
-            milestone_target: couponsRes.data.milestone_target || 8,
-            contact_support_email: couponsRes.data.contact_support_email || 'support@rms.com',
-          });
+        if (gatewayRes.data?.success) {
+          setVendorSaaSData(gatewayRes.data);
         }
       } catch (err) {
         if (user) {
@@ -72,8 +61,6 @@ const ProfileModal = ({ isOpen, onClose }) => {
             address: user.address || '',
             city: user.city || '',
             pincode: user.pincode || '',
-            bank_account_no: user.bank_account_no || '',
-            bank_ifsc: user.bank_ifsc || '',
           });
         }
       } finally {
@@ -81,7 +68,7 @@ const ProfileModal = ({ isOpen, onClose }) => {
       }
     };
 
-    fetchFullProfileAndCoupons();
+    fetchFullProfile();
   }, [isOpen, user]);
 
   if (!isOpen) return null;
@@ -114,96 +101,48 @@ const ProfileModal = ({ isOpen, onClose }) => {
     }
   };
 
-  const progressPercent = Math.min(
-    100,
-    Math.round((loyaltyData.consecutive_good_returns / loyaltyData.milestone_target) * 100)
-  );
-
   return (
     <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-white max-w-lg w-full rounded-xl shadow-xl border border-gray-200 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center border-b border-gray-100 pb-3">
           <h3 className="text-base font-bold text-gray-900 flex items-center gap-2">
             <User className="w-5 h-5 text-blue-600" />
-            <span>Manage My Account Profile</span>
+            <span>Account Profile</span>
           </h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Loyalty Rewards Privilege Section for Customers */}
-        {user?.role === 'customer' && (
-          <div className="bg-gradient-to-r from-blue-900 via-indigo-900 to-blue-800 text-white rounded-xl p-4 space-y-3 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Award className="w-5 h-5 text-amber-400" />
-                <span className="font-bold text-xs">Customer Loyalty Milestone</span>
+        {/* Vendor-Specific SaaS License & Gateway Banner */}
+        {user?.role === 'vendor' && (
+          <div className="bg-gradient-to-r from-gray-900 to-slate-800 text-white rounded-xl p-4 space-y-2.5 shadow-sm text-xs">
+            <div className="flex items-center justify-between border-b border-white/10 pb-2">
+              <div className="flex items-center gap-2 font-bold text-emerald-400">
+                <CreditCard className="w-4 h-4" />
+                <span>Razorpay Gateway Status</span>
               </div>
               <span
-                className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${
-                  loyaltyData.late_returns_count > 0
-                    ? 'bg-amber-500/20 text-amber-300 border-amber-400/40'
-                    : 'bg-white/10 text-white border-white/20'
+                className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                  vendorSaaSData.isConfigured
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30'
+                    : 'bg-amber-500/20 text-amber-300 border border-amber-400/30'
                 }`}
               >
-                {loyaltyData.consecutive_good_returns} / {loyaltyData.milestone_target} Completed
-                {loyaltyData.late_returns_count > 0 && ' (Paused)'}
+                {vendorSaaSData.isConfigured ? 'Active / Configured' : 'Keys Missing'}
               </span>
             </div>
 
-            {loyaltyData.late_returns_count > 0 ? (
-              <div className="bg-amber-950/50 border border-amber-400/40 rounded-lg p-3 space-y-1.5 text-xs">
-                <div className="flex items-center gap-1.5 font-bold text-amber-300">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                  <span>Streak Accrual Paused</span>
-                </div>
-                <p className="text-blue-100 text-[11px] leading-relaxed">
-                  Your streak is paused at <b>{loyaltyData.consecutive_good_returns} / {loyaltyData.milestone_target} returns</b> due to{' '}
-                  <b>{loyaltyData.late_returns_count} overdue return record(s)</b>.
-                </p>
-                <p className="text-blue-100 text-[11px] leading-relaxed">
-                  You can still use any existing coupons below. To request a 1-time amnesty review, contact RMS Support at:{' '}
-                  <a
-                    href={`mailto:${loyaltyData.contact_support_email}`}
-                    className="text-amber-300 font-bold underline hover:text-amber-200"
-                  >
-                    {loyaltyData.contact_support_email}
-                  </a>
-                </p>
-              </div>
-            ) : (
-              <div className="w-full bg-blue-950/60 rounded-full h-2 overflow-hidden border border-white/10">
-                <div
-                  className="bg-gradient-to-r from-amber-400 to-emerald-400 h-2 rounded-full transition-all duration-500"
-                  style={{ width: `${progressPercent}%` }}
-                />
-              </div>
-            )}
-
-            {loyaltyData.coupons.length > 0 ? (
-              <div className="space-y-1.5 pt-1">
-                <span className="text-[11px] text-amber-300 font-semibold flex items-center gap-1">
-                  <Gift className="w-3.5 h-3.5" /> Available 10% Loyalty Coupons:
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {loyaltyData.coupons.map((c) => (
-                    <span
-                      key={c.id}
-                      className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/30 text-[10px] font-bold text-emerald-200 flex items-center gap-1"
-                    >
-                      <Tag className="w-3 h-3" /> {c.code}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              loyaltyData.late_returns_count === 0 && (
-                <p className="text-[11px] text-blue-200">
-                  {loyaltyData.milestone_target - loyaltyData.consecutive_good_returns} more on-time undamaged return(s) to earn your next 10% coupon card.
-                </p>
-              )
-            )}
+            <div className="flex justify-between text-gray-300 text-[11px]">
+              <span className="flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5 text-gray-400" /> 5% Royalty Anniversary Renewal:
+              </span>
+              <span className="font-bold text-amber-300">
+                {vendorSaaSData.subscription_renewal_date
+                  ? new Date(vendorSaaSData.subscription_renewal_date).toLocaleDateString()
+                  : 'N/A'}
+              </span>
+            </div>
           </div>
         )}
 
@@ -237,7 +176,7 @@ const ProfileModal = ({ isOpen, onClose }) => {
                   required
                   value={formData.full_name}
                   onChange={handleChange}
-                  className="w-full p-2 border rounded-lg"
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500"
                 />
               </div>
               <div>
@@ -248,7 +187,7 @@ const ProfileModal = ({ isOpen, onClose }) => {
                   required
                   value={formData.phone}
                   onChange={handleChange}
-                  className="w-full p-2 border rounded-lg"
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500"
                 />
               </div>
             </div>
@@ -261,7 +200,7 @@ const ProfileModal = ({ isOpen, onClose }) => {
                   name="city"
                   value={formData.city}
                   onChange={handleChange}
-                  className="w-full p-2 border rounded-lg"
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500"
                 />
               </div>
               <div>
@@ -271,66 +210,38 @@ const ProfileModal = ({ isOpen, onClose }) => {
                   name="pincode"
                   value={formData.pincode}
                   onChange={handleChange}
-                  className="w-full p-2 border rounded-lg"
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500"
                   placeholder="e.g. 390001"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-gray-700 font-semibold mb-1">Address / Pickup Logistics</label>
+              <label className="block text-gray-700 font-semibold mb-1">Address / Logistics Pickup</label>
               <input
                 type="text"
                 name="address"
                 value={formData.address}
                 onChange={handleChange}
-                className="w-full p-2 border rounded-lg"
-                placeholder="Detailed street address, building, or landmark"
+                className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500"
+                placeholder="Street address, building, or landmark"
               />
-            </div>
-
-            <div className="pt-2 border-t border-gray-100">
-              <p className="text-[11px] text-gray-500 font-semibold mb-2">
-                Bank Details (For Payouts / Escrow Refunds)
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <input
-                    type="text"
-                    name="bank_account_no"
-                    value={formData.bank_account_no}
-                    onChange={handleChange}
-                    placeholder="Bank Account Number"
-                    className="w-full p-2 border rounded-lg"
-                  />
-                </div>
-                <div>
-                  <input
-                    type="text"
-                    name="bank_ifsc"
-                    value={formData.bank_ifsc}
-                    onChange={handleChange}
-                    placeholder="IFSC Code"
-                    className="w-full p-2 border rounded-lg"
-                  />
-                </div>
-              </div>
             </div>
 
             <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 border rounded-lg text-gray-700 hover:bg-gray-50"
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 font-semibold"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={loading}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold disabled:opacity-50"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold disabled:opacity-50 transition shadow-sm"
               >
-                {loading ? 'Saving...' : 'Save Changes'}
+                {loading ? 'Saving...' : 'Save Profile'}
               </button>
             </div>
           </form>

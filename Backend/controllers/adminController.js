@@ -1,10 +1,8 @@
 // controllers/adminController.js
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
-const razorpay = require('../config/razorpay');
-const { sendPayoutSettlementEmail, sendAccountBlockedEmail } = require('../services/emailService');
-const { processLostOrders } = require('../services/cronJobs');
-
+const { sendAccountBlockedEmail } = require('../services/emailService');
+const { processLostOrders, processAnnualLicenseExpiry } = require('../services/cronJobs');
 
 // GET /api/v1/rms/admin/dashboardStats
 exports.getDashboardStats = async (req, res) => {
@@ -12,24 +10,27 @@ exports.getDashboardStats = async (req, res) => {
     const totalUsers = await pool.query("SELECT role, COUNT(*)::INT FROM users GROUP BY role");
     const activeRentals = await pool.query("SELECT COUNT(*)::INT FROM active_orders WHERE status = 'With Customer'");
     const pendingKyc = await pool.query("SELECT COUNT(*)::INT FROM users WHERE kyc_status = 'pending'");
-    const totalSettlements = await pool.query("SELECT SUM(amount)::NUMERIC(10,2) AS gross FROM payouts");
 
-    const loyaltyFinancials = await pool.query(`
+    // SaaS Revenue: 5% annual platform royalties across all billing periods
+    const royaltyFinancials = await pool.query(`
       SELECT 
-        COALESCE(SUM(platform_commission_snapshot), 0) AS total_platform_commission
-      FROM orders 
-      WHERE status IN ('Lock', 'With Customer', 'Returned', 'Lost')
+        COALESCE(SUM(total_net_rental_earnings), 0)::NUMERIC(12,2) AS total_vendor_net_earnings,
+        COALESCE(SUM(platform_fee_due), 0)::NUMERIC(12,2) AS total_platform_royalties_due,
+        COALESCE(SUM(CASE WHEN payment_status = 'PAID' THEN platform_fee_due ELSE 0 END), 0)::NUMERIC(12,2) AS total_royalties_collected
+      FROM vendor_annual_billing
     `);
 
-    const totaldiscountused = await pool.query(`
+    // Total gross business transacted across all vendor gateways
+    const grossVolumeRes = await pool.query(`
       SELECT 
-        COALESCE(SUM(discount_amount_snapshot), 0) AS total_discounts_absorbed
+        COALESCE(SUM(customer_paid_rent_snapshot), 0)::NUMERIC(12,2) AS total_customer_rent_paid,
+        COALESCE(SUM(discount_amount_snapshot), 0)::NUMERIC(12,2) AS total_vendor_discounts_given
       FROM orders 
-      WHERE status NOT IN ('Pending_Payment')
+      WHERE status NOT IN ('Pending_Payment', 'Cancelled')
     `);
 
     const activeCouponsCount = await pool.query(
-      "SELECT COUNT(*) AS active_coupons_count FROM coupons WHERE status = 'AVAILABLE'"
+      "SELECT COUNT(*)::INT AS active_coupons_count FROM store_coupons WHERE is_active = TRUE"
     );
 
     return res.status(200).json({
@@ -38,11 +39,12 @@ exports.getDashboardStats = async (req, res) => {
         usersByRole: totalUsers.rows,
         activeRentalsCount: activeRentals.rows[0]?.count || 0,
         pendingKycCount: pendingKyc.rows[0]?.count || 0,
-        totalDisbursedAmount: totalSettlements.rows[0]?.gross || 0,
-
-        totalPlatformCommission: parseFloat(loyaltyFinancials.rows[0].total_platform_commission),
-        totalDiscountsAbsorbed: parseFloat(totaldiscountused.rows[0].total_discounts_absorbed),
-        activeCouponsCount: parseInt(activeCouponsCount.rows[0].active_coupons_count, 10),
+        totalVendorNetEarnings: parseFloat(royaltyFinancials.rows[0].total_vendor_net_earnings),
+        totalPlatformRoyaltiesDue: parseFloat(royaltyFinancials.rows[0].total_platform_royalties_due),
+        totalRoyaltiesCollected: parseFloat(royaltyFinancials.rows[0].total_royalties_collected),
+        totalCustomerRentPaid: parseFloat(grossVolumeRes.rows[0].total_customer_rent_paid),
+        totalVendorDiscountsGiven: parseFloat(grossVolumeRes.rows[0].total_vendor_discounts_given),
+        activeCouponsCount: activeCouponsCount.rows[0]?.active_coupons_count || 0,
       },
     });
   } catch (error) {
@@ -55,10 +57,8 @@ exports.getDashboardStats = async (req, res) => {
 exports.getOrdersByCategory = async (req, res) => {
   try {
     const { category } = req.query; 
-    // 'all' | 'with_customer' | 'returned_on_time' | 'returned_late' | 'overdue_active' | 'lost' | 'cancelled'
 
     let whereClause = '';
-
     switch (category) {
       case 'with_customer':
         whereClause = "o.status = 'With Customer' AND CURRENT_DATE <= o.end_date";
@@ -108,6 +108,8 @@ exports.getAllVendors = async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT u.id, u.full_name, u.email, u.phone, u.address, u.city, u.pincode, u.is_blocked,
+             u.subscription_start_date, u.subscription_renewal_date,
+             (u.razorpay_key_id IS NOT NULL) AS has_payment_gateway,
              COUNT(p.id)::INT AS total_products
       FROM users u
       LEFT JOIN products p ON u.id = p.vendor_id
@@ -161,7 +163,6 @@ exports.getDelinquentUsers = async (req, res) => {
         u.email, 
         u.phone, 
         u.late_returns_count, 
-        u.consecutive_good_returns, 
         u.is_blocked,
         COALESCE(SUM(cph.violations_pardoned), 0)::INT AS total_pardoned_violations,
         COUNT(cph.id)::INT AS pardon_count,
@@ -192,7 +193,6 @@ exports.pardonDelinquentUser = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Fetch current late returns count
     const userRes = await client.query(
       'SELECT id, full_name, email, late_returns_count FROM users WHERE id = $1 FOR UPDATE',
       [userId]
@@ -214,19 +214,17 @@ exports.pardonDelinquentUser = async (req, res) => {
       });
     }
 
-    // 1. Insert audit record in customer_pardon_history
     await client.query(
       `INSERT INTO customer_pardon_history (customer_id, admin_id, violations_pardoned, reason)
        VALUES ($1, $2, $3, $4)`,
       [userId, adminId, violationsToPardon, reason || '1-Time Customer Loyalty Pardon granted by Administrator']
     );
 
-    // 2. Reset active late_returns_count to 0 (unfreezes loyalty streak without losing existing count)
     const updatedUserRes = await client.query(
       `UPDATE users 
        SET late_returns_count = 0 
        WHERE id = $1 
-       RETURNING id, full_name, email, late_returns_count, consecutive_good_returns`,
+       RETURNING id, full_name, email, late_returns_count`,
       [userId]
     );
 
@@ -246,12 +244,11 @@ exports.pardonDelinquentUser = async (req, res) => {
   }
 };
 
-
 // POST /api/v1/rms/admin/toggleBlockUser
 exports.toggleBlockUser = async (req, res) => {
   const client = await pool.connect();
   try {
-    const { userId, is_blocked } = req.body; //[cite: 21]
+    const { userId, is_blocked } = req.body;
 
     await client.query('BEGIN');
 
@@ -265,7 +262,6 @@ exports.toggleBlockUser = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
-    // If blocking user, auto-cancel orders in 'Lock' status (not yet handed over)
     if (is_blocked) {
       await client.query(
         `UPDATE orders 
@@ -286,13 +282,12 @@ exports.toggleBlockUser = async (req, res) => {
 
     const io = req.app.get('socketio');
     if (io && is_blocked) {
-      io.emit('USER_BLOCKED', { userId }); //[cite: 21]
-      io.emit('PAYOUT_GENERATED', { customerId: userId });
+      io.emit('USER_BLOCKED', { userId });
     }
 
     return res.status(200).json({
       success: true,
-      message: `User ${is_blocked ? 'blocked and non-dispatched bookings refunded' : 'unblocked'} successfully.`,
+      message: `User ${is_blocked ? 'blocked and undelivered bookings cancelled' : 'unblocked'} successfully.`,
       user: result.rows[0],
     });
   } catch (error) {
@@ -304,12 +299,11 @@ exports.toggleBlockUser = async (req, res) => {
   }
 };
 
-
-// GET /api/v1/rms/admin/officers
+// KYC Officer Management
 exports.getKycOfficers = async (req, res) => {
   try {
     const result = await pool.query(
-      "SELECT id, full_name, email, phone, created_at FROM users WHERE role = 'kyc_officer' AND is_blocked=false"
+      "SELECT id, full_name, email, phone, created_at FROM users WHERE role = 'kyc_officer' AND is_blocked = FALSE"
     );
     return res.status(200).json({ success: true, officers: result.rows });
   } catch (error) {
@@ -318,7 +312,6 @@ exports.getKycOfficers = async (req, res) => {
   }
 };
 
-// POST /api/v1/rms/admin/addOfficer
 exports.addKycOfficer = async (req, res) => {
   try {
     const { full_name, email, phone, password } = req.body;
@@ -340,12 +333,10 @@ exports.addKycOfficer = async (req, res) => {
   }
 };
 
-// DELETE /api/v1/rms/admin/removeOfficer/:id
 exports.removeKycOfficer = async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.query("UPDATE users SET is_blocked = True WHERE id = $1 AND role = 'kyc_officer'", [id]);
-
+    await pool.query("UPDATE users SET is_blocked = TRUE WHERE id = $1 AND role = 'kyc_officer'", [id]);
     return res.status(200).json({ success: true, message: 'Officer removed successfully.' });
   } catch (error) {
     console.error('Remove Officer Error:', error);
@@ -353,247 +344,10 @@ exports.removeKycOfficer = async (req, res) => {
   }
 };
 
-// GET /api/v1/rms/admin/pendingPayouts
-// GET /api/v1/rms/admin/pendingPayouts
-// Fetches only unpaid settlements (gateway_reference_id IS NULL)
-exports.getPendingPayouts = async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT p.*, u.full_name AS recipient_name, u.bank_account_no, u.bank_ifsc, u.phone
-      FROM payouts p
-      JOIN users u ON p.recipient_id = u.id
-      WHERE p.gateway_reference_id IS NULL
-      ORDER BY p.processed_at DESC
-    `);
-    return res.status(200).json({ success: true, payouts: result.rows });
-  } catch (error) {
-    console.error('Get Payouts Error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to fetch pending payouts.' });
-  }
-};
-
-// POST /api/v1/rms/admin/recordPayoutReference
-// Verifies directly with Razorpay API before recording gateway_reference_id
-// POST /api/v1/rms/admin/recordPayoutReference
-// Verifies directly with Razorpay API before recording gateway_reference_id
-exports.recordPayoutReference = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { payout_id, gateway_reference_id } = req.body;
-
-    if (!payout_id || !gateway_reference_id || typeof gateway_reference_id !== 'string') {
-      return res.status(400).json({
-        success: false,
-        message: 'Payout ID and a valid Razorpay Reference ID are required.',
-      });
-    }
-
-    const trimmedRef = gateway_reference_id.trim();
-
-    await client.query('BEGIN');
-
-    // 1. Acquire exclusive row-level lock on payout record[cite: 8]
-    const existingPayout = await client.query(
-      'SELECT * FROM payouts WHERE id = $1 FOR UPDATE',
-      [payout_id]
-    );
-
-    if (existingPayout.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ success: false, message: 'Payout record not found.' });
-    }
-
-    const payoutRecord = existingPayout.rows[0];
-
-    if (payoutRecord.gateway_reference_id) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        success: false,
-        message: 'This payout has already been verified and recorded.',
-      });
-    }
-
-    // 2. Query Razorpay API directly to verify genuine transaction[cite: 8]
-    let razorpayPayment;
-    try {
-      razorpayPayment = await razorpay.payments.fetch(trimmedRef);
-    } catch (rzpErr) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid Razorpay Reference ID or transaction does not exist on Razorpay.',
-        error: rzpErr.error ? rzpErr.error.description : rzpErr.message,
-      });
-    }
-
-    // 3. Verify Payment Status & Amount Integrity[cite: 8]
-    const expectedPaise = Math.round(parseFloat(payoutRecord.amount) * 100);
-
-    if (razorpayPayment.status !== 'captured' && razorpayPayment.status !== 'processed') {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        success: false,
-        message: `Transaction on Razorpay is not successful (Current Status: ${razorpayPayment.status}).`,
-      });
-    }
-
-    if (razorpayPayment.amount !== expectedPaise) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        success: false,
-        message: `Amount mismatch: Payout requires ₹${payoutRecord.amount}, but Razorpay transaction is for ₹${razorpayPayment.amount / 100}.`,
-      });
-    }
-
-    // 4. Update payout record with transaction reference[cite: 8]
-    const result = await client.query(
-      `UPDATE payouts 
-       SET gateway_reference_id = $1,
-           processed_at = CURRENT_TIMESTAMP
-       WHERE id = $2 
-       RETURNING *`,
-      [trimmedRef, payout_id]
-    );
-
-    await client.query('COMMIT');
-
-    // 5. Send settlement receipt email asynchronously
-    const recipientQuery = await pool.query(
-      `SELECT u.full_name, u.email, u.bank_account_no, u.bank_ifsc,
-              o.start_date, o.end_date, p_prod.title AS product_title
-       FROM payouts p
-       JOIN users u ON p.recipient_id = u.id
-       JOIN orders o ON p.order_id = o.id
-       JOIN products p_prod ON o.product_id = p_prod.id
-       WHERE p.id = $1`,
-      [payout_id]
-    );
-
-    if (recipientQuery.rows.length > 0) {
-      const data = recipientQuery.rows[0];
-      sendPayoutSettlementEmail({
-        recipient: {
-          full_name: data.full_name,
-          email: data.email,
-          bank_account_no: data.bank_account_no,
-          bank_ifsc: data.bank_ifsc,
-        },
-        payout: result.rows[0],
-        orderDetails: {
-          product_title: data.product_title,
-          start_date: data.start_date,
-          end_date: data.end_date,
-        },
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: 'Payout transaction verified with Razorpay and recorded successfully.',
-      payout: result.rows[0],
-      razorpay_details: {
-        id: razorpayPayment.id,
-        method: razorpayPayment.method,
-        status: razorpayPayment.status,
-      },
-    });
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    console.error('Record Payout Error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to process payout verification.' });
-  } finally {
-    client.release();
-  }
-};
-
-// POST /api/v1/rms/admin/createPayoutOrder
-// Generates a Razorpay order_id for an individual payout settlement
-// exports.createPayoutOrder = async (req, res) => {
-//   const client = await pool.connect();
-//   try {
-//     const { payout_id } = req.body;
-
-//     if (!payout_id) {
-//       return res.status(400).json({ success: false, message: 'Payout ID is required.' });
-//     }
-
-//     await client.query('BEGIN');
-
-//     // 1. Acquire exclusive lock on payout record to prevent concurrent order creation[cite: 8]
-//     const payoutRes = await client.query(
-//       `SELECT p.*, u.full_name AS recipient_name, u.email AS recipient_email, u.phone AS recipient_phone
-//        FROM payouts p
-//        JOIN users u ON p.recipient_id = u.id
-//        WHERE p.id = $1 FOR UPDATE`,
-//       [payout_id]
-//     );
-
-//     if (payoutRes.rows.length === 0) {
-//       await client.query('ROLLBACK');
-//       return res.status(404).json({ success: false, message: 'Payout record not found.' });
-//     }
-
-//     const payout = payoutRes.rows[0];
-
-//     // Check if payout has already been completed[cite: 8]
-//     if (payout.gateway_reference_id) {
-//       await client.query('ROLLBACK');
-//       return res.status(400).json({
-//         success: false,
-//         message: 'This payout has already been paid and finalized.',
-//       });
-//     }
-
-//     // 2. Convert amount to paise (e.g., ₹500.00 -> 50000 paise)[cite: 8]
-//     const amountInPaise = Math.round(parseFloat(payout.amount) * 100);
-
-//     // 3. Create Razorpay Order[cite: 8]
-//     const options = {
-//       amount: amountInPaise,
-//       currency: 'INR',
-//       receipt: `payout_rcpt_${payout.id}_${Date.now()}`,
-//       notes: {
-//         payout_id: payout.id.toString(),
-//         order_id: payout.order_id.toString(),
-//         recipient_id: payout.recipient_id.toString(),
-//         payout_type: payout.type,
-//       },
-//     };
-
-//     const rzpOrder = await razorpay.orders.create(options);
-
-//     await client.query('COMMIT');
-
-//     return res.status(200).json({
-//       success: true,
-//       message: 'Razorpay order created for payout approval.',
-//       key_id: process.env.RAZORPAY_KEY_ID,
-//       razorpay_order_id: rzpOrder.id,
-//       amount: rzpOrder.amount,
-//       currency: rzpOrder.currency,
-//       payout: {
-//         id: payout.id,
-//         amount: payout.amount,
-//         type: payout.type,
-//         recipient_name: payout.recipient_name,
-//         recipient_email: payout.recipient_email,
-//         recipient_phone: payout.recipient_phone,
-//       },
-//     });
-//   } catch (error) {
-//     await client.query('ROLLBACK').catch(() => {});
-//     console.error('Create Payout Order Error:', error);
-//     return res.status(500).json({ success: false, message: 'Failed to create payout order.' });
-//   } finally {
-//     client.release();
-//   }
-// };
-
 // POST /api/v1/rms/admin/triggerLostOrdersCheck
 exports.triggerLostOrdersCheck = async (req, res) => {
   try {
     const result = await processLostOrders();
-
     return res.status(200).json({
       success: true,
       message: `Lost orders reconciliation executed. ${result.count} order(s) marked as Lost.`,
@@ -609,94 +363,147 @@ exports.triggerLostOrdersCheck = async (req, res) => {
   }
 };
 
+// GET /api/v1/rms/admin/annualBillingAudit
+// Oversee vendor annual 5% platform royalty obligations
+exports.getAnnualBillingAudit = async (req, res) => {
+  try {
+    const query = `
+      SELECT vab.*, u.full_name AS vendor_name, u.email AS vendor_email, u.phone AS vendor_phone
+      FROM vendor_annual_billing vab
+      JOIN users u ON vab.vendor_id = u.id
+      ORDER BY vab.billing_year DESC, vab.period_end DESC
+    `;
+    const result = await pool.query(query);
+    return res.status(200).json({ success: true, billingLedger: result.rows });
+  } catch (error) {
+    console.error('Annual Billing Audit Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch annual billing records.' });
+  }
+};
+
+// POST /api/v1/rms/admin/markAnnualBillingPaid
+// Admin confirms receipt of the vendor's 5% annual royalty fee
+exports.markAnnualBillingPaid = async (req, res) => {
+  try {
+    const { billing_id } = req.body;
+    if (!billing_id) {
+      return res.status(400).json({ success: false, message: 'Billing ID is required.' });
+    }
+
+    const result = await pool.query(
+      `UPDATE vendor_annual_billing 
+       SET payment_status = 'PAID', paid_at = CURRENT_TIMESTAMP 
+       WHERE id = $1 
+       RETURNING *`,
+      [billing_id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Billing record not found.' });
+    }
+
+    const vendorId = result.rows[0].vendor_id;
+
+    // Advance the vendor's subscription dates by 1 year
+    await pool.query(
+      `UPDATE users 
+       SET subscription_start_date = CURRENT_DATE,
+           subscription_renewal_date = (CURRENT_DATE + INTERVAL '1 year')
+       WHERE id = $1`,
+      [vendorId]
+    );
+
+    // Notify any open vendor sessions via socket
+    const io = req.app.get('socketio');
+    if (io) {
+      io.emit('ANNUAL_BILLING_PAID', { vendorId, billingId: billing_id });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Annual platform royalty marked as PAID. Vendor subscription renewed.',
+      record: result.rows[0],
+    });
+  } catch (error) {
+    console.error('Mark Billing Paid Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update billing status.' });
+  }
+};
 
 // GET /api/v1/rms/admin/transactionLedger
+// Unified audit ledger tracking customer checkouts and vendor deposit refunds
 exports.getTransactionLedger = async (req, res) => {
   try {
-    // 1. Fetch All Incoming Customer Payments (Including Loyalty Discounts & Platform Commission Snapshots)
+    // 1. Direct Customer Inflows (Checkout bookings)
     const incomingQuery = `
       SELECT 
         po.id AS group_id,
         po.created_at AS transaction_date,
+        po.razorpay_payment_id AS payment_reference,
         u.full_name AS customer_name,
-        u.email AS customer_email,
-        u.phone AS customer_phone,
+        v.full_name AS vendor_name,
+        'INFLOW_PAYMENT' AS transaction_type,
         COUNT(o.id)::INT AS total_sub_orders,
         COALESCE(SUM(o.gross_rent_snapshot), 0)::NUMERIC(10,2) AS total_gross_rent,
-        COALESCE(SUM(o.discount_amount_snapshot), 0)::NUMERIC(10,2) AS total_loyalty_discount,
-        COALESCE(SUM(o.customer_paid_rent_snapshot), 0)::NUMERIC(10,2) AS total_rent,
-        COALESCE(SUM(o.deposit_per_item_snapshot * o.quantity), 0)::NUMERIC(10,2) AS total_escrow_deposit,
-        COALESCE(SUM(o.platform_commission_snapshot), 0)::NUMERIC(10,2) AS total_platform_commission,
+        COALESCE(SUM(o.discount_amount_snapshot), 0)::NUMERIC(10,2) AS total_vendor_discount,
+        COALESCE(SUM(o.customer_paid_rent_snapshot), 0)::NUMERIC(10,2) AS total_net_rent,
+        COALESCE(SUM(o.deposit_per_item_snapshot * o.quantity), 0)::NUMERIC(10,2) AS total_security_deposit,
         (COALESCE(SUM(o.customer_paid_rent_snapshot), 0) + COALESCE(SUM(o.deposit_per_item_snapshot * o.quantity), 0))::NUMERIC(10,2) AS gross_amount
       FROM parent_order po
       JOIN users u ON po.customer_id = u.id
+      JOIN users v ON po.vendor_id = v.id
       JOIN orders o ON po.id = o.group_id
       WHERE o.status != 'Pending_Payment'
-      GROUP BY po.id, po.created_at, u.full_name, u.email, u.phone
+      GROUP BY po.id, po.created_at, po.razorpay_payment_id, u.full_name, v.full_name
       ORDER BY po.created_at DESC
     `;
 
-    // 2. Fetch All Outgoing Disbursals (Payout Ledger Entries)
+    // 2. Vendor Outflows (Deposit refunds upon return or cancellation)
     const outgoingQuery = `
       SELECT 
-        p.id AS payout_id,
-        p.order_id,
-        p.group_id,
-        p.amount,
-        p.type,
-        p.gateway_reference_id,
-        p.processed_at,
-        u.full_name AS recipient_name,
-        u.email AS recipient_email,
-        u.role AS recipient_role,
-        u.bank_account_no,
-        u.bank_ifsc,
-        prod.title AS product_title
-      FROM payouts p
-      JOIN users u ON p.recipient_id = u.id
-      JOIN orders o ON p.order_id = o.id
-      JOIN products prod ON o.product_id = prod.id
-      ORDER BY p.processed_at DESC
+        o.id AS order_id,
+        o.group_id,
+        o.returned_to_vendor_at AS transaction_date,
+        o.deposit_refund_reference AS payment_reference,
+        u.full_name AS customer_name,
+        v.full_name AS vendor_name,
+        p.title AS product_title,
+        'OUTFLOW_REFUND' AS transaction_type,
+        o.deposit_refunded_amount AS refund_amount,
+        (o.deposit_per_item_snapshot * o.quantity) AS original_deposit,
+        o.product_condition,
+        o.status AS order_status
+      FROM orders o
+      JOIN users u ON o.customer_id = u.id
+      JOIN users v ON o.vendor_id = v.id
+      JOIN products p ON o.product_id = p.id
+      WHERE o.deposit_refund_reference IS NOT NULL 
+         OR o.deposit_refunded_amount > 0
+      ORDER BY o.returned_to_vendor_at DESC NULLS LAST
     `;
 
-    // 3. Aggregate Platform-Wide Revenue & Discount Totals
-    const platformFinancialsQuery = `
-      SELECT 
-        COALESCE(SUM(platform_commission_snapshot), 0)::NUMERIC(10,2) AS total_platform_commission_earned,
-        COALESCE(SUM(discount_amount_snapshot), 0)::NUMERIC(10,2) AS total_loyalty_discounts_absorbed
-      FROM orders
-      WHERE status IN ('Lock', 'With Customer', 'Returned', 'Lost')
-    `;
-
-    const [incomingRes, outgoingRes, financialsRes] = await Promise.all([
+    const [inflowsRes, outflowsRes] = await Promise.all([
       pool.query(incomingQuery),
       pool.query(outgoingQuery),
-      pool.query(platformFinancialsQuery),
     ]);
 
-    const totalCollected = incomingRes.rows.reduce((acc, row) => acc + parseFloat(row.gross_amount || 0), 0);
-    const totalDisbursedSettled = outgoingRes.rows
-      .filter((p) => p.gateway_reference_id)
-      .reduce((acc, row) => acc + parseFloat(row.amount || 0), 0);
-    const totalPendingDisbursal = outgoingRes.rows
-      .filter((p) => !p.gateway_reference_id)
-      .reduce((acc, row) => acc + parseFloat(row.amount || 0), 0);
-
-    const platformCommissionEarned = parseFloat(financialsRes.rows[0]?.total_platform_commission_earned || 0);
-    const loyaltyDiscountsAbsorbed = parseFloat(financialsRes.rows[0]?.total_loyalty_discounts_absorbed || 0);
+    const totalCollected = inflowsRes.rows.reduce((acc, row) => acc + parseFloat(row.gross_amount || 0), 0);
+    const totalNetRent = inflowsRes.rows.reduce((acc, row) => acc + parseFloat(row.total_net_rent || 0), 0);
+    const totalDiscounts = inflowsRes.rows.reduce((acc, row) => acc + parseFloat(row.total_vendor_discount || 0), 0);
+    const totalRefunded = outflowsRes.rows.reduce((acc, row) => acc + parseFloat(row.refund_amount || 0), 0);
 
     return res.status(200).json({
       success: true,
       summary: {
-        totalGrossCollected: totalCollected,
-        totalDisbursedSettled: totalDisbursedSettled,
-        totalPendingDisbursal: totalPendingDisbursal,
-        netEscrowRetained: totalCollected - (totalDisbursedSettled + totalPendingDisbursal),
-        totalPlatformCommissionEarned: platformCommissionEarned,
-        totalLoyaltyDiscountsAbsorbed: loyaltyDiscountsAbsorbed,
+        totalGrossVolumeTransacted: totalCollected,
+        totalNetRentalRevenue: totalNetRent,
+        totalVendorDiscountsGiven: totalDiscounts,
+        totalSecurityDepositsRefunded: totalRefunded,
+        totalInflowTransactions: inflowsRes.rows.length,
+        totalOutflowRefunds: outflowsRes.rows.length,
       },
-      incomingTransactions: incomingRes.rows,
-      outgoingPayouts: outgoingRes.rows,
+      inflowTransactions: inflowsRes.rows,
+      outflowRefunds: outflowsRes.rows,
     });
   } catch (error) {
     console.error('Transaction Ledger Error:', error);
@@ -704,132 +511,17 @@ exports.getTransactionLedger = async (req, res) => {
   }
 };
 
-
-// POST /api/v1/rms/admin/batchBankingPayouts
-// Simulates enterprise-grade IMPS/NEFT bank clearing run for selected payouts
-exports.batchBankingPayouts = async (req, res) => {
-  const client = await pool.connect();
+// POST /api/v1/rms/admin/triggerLicenseExpiryCheck
+exports.triggerLicenseExpiryCheck = async (req, res) => {
   try {
-    const { payout_ids } = req.body; // Array of payout IDs selected by Admin
-
-    if (!payout_ids || !Array.isArray(payout_ids) || payout_ids.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please provide an array of selected payout IDs to process.',
-      });
-    }
-
-    await client.query('BEGIN');
-
-    // 1. Acquire exclusive lock on the selected pending payouts
-    const selectedRes = await client.query(
-      `SELECT p.id, p.amount, p.type, p.order_id, p.recipient_id,
-              u.full_name, u.email, u.bank_account_no, u.bank_ifsc,
-              o.start_date, o.end_date, prod.title AS product_title
-       FROM payouts p
-       JOIN users u ON p.recipient_id = u.id
-       JOIN orders o ON p.order_id = o.id
-       JOIN products prod ON o.product_id = prod.id
-       WHERE p.id = ANY($1::int[]) AND p.gateway_reference_id IS NULL
-       FOR UPDATE`,
-      [payout_ids]
-    );
-
-    if (selectedRes.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        success: false,
-        message: 'None of the selected payouts are currently pending or eligible for disbursal.',
-      });
-    }
-
-    const payoutsToProcess = selectedRes.rows;
-    const settledRecords = [];
-
-    // Helper: Generate an authentic 12-character Indian Banking UTR (e.g., CMS260902481923)
-    const generateBankingUTR = () => {
-      const now = new Date();
-      const yy = String(now.getFullYear()).slice(-2);
-      const mm = String(now.getMonth() + 1).padStart(2, '0');
-      const dd = String(now.getDate()).padStart(2, '0');
-      const randomSeq = Math.floor(100000 + Math.random() * 900000);
-      return `CMS${yy}${mm}${dd}${randomSeq}`;
-    };
-
-    // 2. Process each payout and assign unique banking UTRs
-    for (const payout of payoutsToProcess) {
-      const simulatedUtr = generateBankingUTR();
-
-      await client.query(
-        `UPDATE payouts
-         SET gateway_reference_id = $1,
-             processed_at = CURRENT_TIMESTAMP
-         WHERE id = $2`,
-        [simulatedUtr, payout.id]
-      );
-
-      settledRecords.push({
-        ...payout,
-        gateway_reference_id: simulatedUtr,
-      });
-    }
-
-    await client.query('COMMIT');
-
-    // Helper delay function
-    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-    // Replace the setImmediate block in batchBankingPayouts with this sequential worker:
-    setImmediate(async () => {
-      for (const record of settledRecords) {
-        try {
-          await sendPayoutSettlementEmail({
-            recipient: {
-              full_name: record.full_name,
-              email: record.email,
-              bank_account_no: record.bank_account_no,
-              bank_ifsc: record.bank_ifsc,
-            },
-            payout: {
-              id: record.id,
-              amount: record.amount,
-              type: record.type,
-              order_id: record.order_id,
-              gateway_reference_id: record.gateway_reference_id,
-            },
-            orderDetails: {
-              product_title: record.product_title,
-              start_date: record.start_date,
-              end_date: record.end_date,
-            },
-          });
-          // 400ms pause between emails to comply with Gmail SMTP limits
-          await delay(400);
-        } catch (err) {
-          console.error(`⚠️ Failed to send settlement slip for payout #${record.id}:`, err.message);
-        }
-      }
-    });
-
-    const totalDisbursed = settledRecords.reduce((acc, p) => acc + parseFloat(p.amount || 0), 0);
-
+    const result = await processAnnualLicenseExpiry();
     return res.status(200).json({
       success: true,
-      message: `Batch settlement completed. Disbursed ₹${totalDisbursed.toFixed(2)} across ${settledRecords.length} payouts via IMPS rails.`,
-      count: settledRecords.length,
-      total_amount: totalDisbursed,
-      settled_payouts: settledRecords.map((p) => ({
-        id: p.id,
-        recipient: p.full_name,
-        amount: p.amount,
-        utr: p.gateway_reference_id,
-      })),
+      message: `License expiry audit completed. Generated ${result.count} pending annual bill(s).`,
+      count: result.count,
     });
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    console.error('Batch Banking Payouts Error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to process batch settlement.' });
-  } finally {
-    client.release();
+    console.error('Admin Trigger License Expiry Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to execute license audit.' });
   }
 };

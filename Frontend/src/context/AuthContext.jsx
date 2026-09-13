@@ -1,3 +1,4 @@
+// src/context/AuthContext.jsx
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import api from '../api/axiosInstance';
 
@@ -5,15 +6,28 @@ const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem('rms_user');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = localStorage.getItem('rms_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
   });
+
+  // Keep loading true on mount if a saved user exists, so ProtectedRoute waits for sync
   const [loading, setLoading] = useState(true);
 
-  // Sync profile data on initial page load
+  // Sync profile data on initial page load / hard refresh
   useEffect(() => {
-  const fetchProfile = async () => {
-    if (user) {
+    const fetchProfile = async () => {
+      const savedUser = localStorage.getItem('rms_user');
+
+      // If no stored user exists in storage, stop loading immediately
+      if (!savedUser) {
+        setLoading(false);
+        return;
+      }
+
       try {
         const res = await api.get('/user/myProfile');
         if (res.data.success) {
@@ -22,14 +36,22 @@ export const AuthProvider = ({ children }) => {
           localStorage.setItem('rms_user', JSON.stringify(profileData));
         }
       } catch (err) {
-        setUser(null);
-        localStorage.removeItem('rms_user');
+        // ONLY log out if the server explicitly rejects the auth token/session (401 or 403)
+        if (err.response && (err.response.status === 401 || err.response.status === 403)) {
+          console.warn('Session expired or unauthorized. Logging out.');
+          setUser(null);
+          localStorage.removeItem('rms_user');
+        } else {
+          // For network drops or temporary errors, retain cached user from localStorage
+          console.warn('Could not refresh profile from server, keeping offline session:', err.message);
+        }
+      } finally {
+        setLoading(false);
       }
-    }
-    setLoading(false);
-  };
-  fetchProfile();
-}, []);
+    };
+
+    fetchProfile();
+  }, []);
 
   const login = (userData) => {
     setUser(userData);

@@ -310,3 +310,53 @@ VendorDashboard.jsx: Introduced a "Handover Equipment" modal allowing vendors to
 | **Double-Booking & Checkout Drop-offs** | The catalog allowed selection of any future dates, only throwing inventory errors at cart addition or Razorpay checkout initialization. | **60-Day Rolling Availability Engine:** Implemented a calendar generation query using PostgreSQL `generate_series` and window overlap calculations (`check_product_availability`). It aggregates active orders (`Lock`, `With Customer`) over the next 60 days, feeding a visual availability ribbon on `ProductDetail.jsx` showing exact units remaining and sold-out dates. |
 | **PDF Text Collision & Coordinate Bleed** | Long product titles, multi-item table schedules, and legal policy notices overlapped vertically and horizontally in standard PDFKit renders, creating unreadable, garbled text. | **Fixed Bounding Box Math & Dynamic Offsets:** Refactored `pdfGenerator.js` with explicit coordinate partitions: strict column widths (44 to 542 pt grid), single-line title truncation with ellipsis, dedicated ASCII string sanitization (preventing character encoding corruptions), and dynamic vertical cursor tracking (`currY`) with automated page breaks. |
 | **Payment Verification Controller Crashes** | When transforming orders to `Lock` status in `paymentController.js`, iterating over array structures via `.rows` triggered runtime `TypeError` exceptions, risking rollback after payment capture. | **Array Handling & Automatic Cart Cleanup:** Standardized array responses in `verifyPayment`, ensured consistent WebSocket notifications (`ORDER_LOCKED`), and added atomic post-payment cart purging (`DELETE FROM cart WHERE user_id = $1`). |
+
+
+
+🏷️ Version 6.0.0 — Zero-Intermediation Direct Gateway Architecture, Store Promotional Campaigns & Automated Annual SaaS Licensing📌 Overview & MotivationAs the platform scaled, holding marketplace escrow centrally introduced regulatory overhead, delayed vendor payouts, and created treasury balance friction. Version 6.0.0 shifts the financial architecture from a centralized platform escrow model to a Zero-Intermediation Merchant-Direct Model.Under this model:100% Direct Inflows: Vendors configure their own Razorpay payment gateway keys. Rental revenue and security deposits land instantly into the vendor’s personal Razorpay merchant account.  0% Per-Order Commission: The platform takes zero percentage on individual bookings, removing escrow payout delays entirely.  5% Annual SaaS Licensing Royalty: The platform monetizes strictly via a 5% software licensing royalty calculated on cumulative annual net rental earnings, settled automatically upon each vendor's 12-month subscription anniversary.  Self-Funded Store Promotional Campaigns: Vendors can launch localized coupon campaigns with custom redemption rules, duration thresholds, and soft-delete archiving.  
+
+
+⚙️ Technical Implementation DetailsDatabase Architecture & Procedural Triggers (PostgreSQL):vendor_annual_billing: Tracks vendor annual cycles (vendor_id, billing_year, period_start, period_end, total_orders_completed, total_net_rental_earnings, platform_fee_due, payment_status, paid_at) with unique constraints on (vendor_id, billing_year).  store_coupons & coupon_redemptions: Soft-deletable promotional coupon storage supporting PERCENT and FLAT discount types, minimum order amounts, minimum rental durations, per-user limits, and lifetime redemption caps.  trg_update_annual_billing_on_return: Trigger that intercepts both 'Returned' and 'Lost' orders. Calculates 5% platform royalties exclusively on customer_paid_rent_snapshot (guaranteeing customer security deposits are 100% tax-exempt). Freezes bills marked 'PENDING' or 'PAID' and automatically routes grace-period returns into the subsequent fiscal cycle.  Scheduled Audits & Background Cron Jobs (node-cron):Midnight License Audit (0 0 * * * IST): Scans vendors whose subscription_renewal_date <= CURRENT_DATE. Runs an authoritative SUM(customer_paid_rent_snapshot) audit over completed orders, resolves paisa rounding drifts, writes final grand totals, and promotes records to 'PENDING'::billing_status_type.  Nightly Lost Order Check (0 21 * * * IST): Evaluates orders in 'With Customer' status where CURRENT_DATE > end_date + max_late_days. Marks overdue gear as 'Lost', stamps returned_to_vendor_at = CURRENT_TIMESTAMP, forfeits deposits, decrements product stock, and logs customer delinquency.  Backend Services & Controller Endpoints (Express.js):POST /api/v1/rms/vendor/updateGatewayCredentials: Encrypts vendor Razorpay Key Secrets using AES-256-GCM before saving to database.  POST /api/v1/rms/payment/createCheckoutOrder: Dynamically instantiates the vendor's decrypted Razorpay instance, verifies single-vendor cart boundaries, validates coupon limits, locks temporary inventory, and generates the payment order.  POST /api/v1/rms/vendor/createAnnualBillingOrder: Initializes an order on the platform admin's master Razorpay account for the vendor's pending 5% annual royalty fee.  POST /api/v1/rms/vendor/verifyAnnualBillingPayment: Verifies platform admin HMAC SHA-256 signatures, sets payment_status = 'PAID', stamps paid_at, and rolls the subscription forward using the fixed anniversary anchor.  GET /api/v1/rms/vendor/coupons: Fetches active and past vendor campaigns.  POST /api/v1/rms/vendor/createCoupon: Validates tiered constraints and deploys new store promo codes.  DELETE /api/v1/rms/vendor/deleteCoupon/:id: Soft-deletes coupons (is_archived = TRUE, is_active = FALSE) to safeguard historical order audits.  Frontend Workspaces & User Experience (React + Tailwind CSS):VendorDashboard.jsx:Dynamic Annual License Banner: Amber countdown banner during the 3-day grace window; turns into a red lockout warning once overdue, offering direct 1-click Razorpay settlement.  Promotions & Coupons Sub-Tab Switcher: Toggle bar separating "Active Campaigns" from "Past & Archived" promotions with counters and badges.  Payment Gateway & License Tab: Form for saving AES-256 encrypted Razorpay keys alongside historical annual billing statements.  Cart.jsx & ProductDetail.jsx:Grace-Aware Gating: Storefront remains accessible throughout the 3-day grace window; locks with an informative pause banner only after grace expiration.  Store Coupon Selector: Allows customers to select available vendor promotions with instant checks against rental duration and minimum rent thresholds.  Single-Vendor Enforcement: Modal preventing multi-vendor checkouts with a 1-click option to switch stores.  AdminDashboard.jsx:Read-Only Royalty Audit: Replaced manual payment buttons with an automated settlement audit column displaying payment timestamps and status badges.
+
+
+Challenge / Problem -	Root Cause -	Engineering Solution
+Multi-Vendor Cart Fragmentation
+
+In a zero-intermediation model where funds disburse directly to vendors, checkout orders cannot split payments across multiple distinct Razorpay merchant accounts.
+
+Single-Store Cart Enforcement: Enforced strict boundaries on cart additions (SELECT DISTINCT p.vendor_id). If a user selects equipment from a second store, an interactive modal displays the conflicting vendors and offers an atomic 1-click option to clear and switch stores.
+
+
+Premature Payment Settlement & Ledger Corruption
+
+Administrators possessed a manual "Confirm Payment" button in the admin console. Using this override mid-year marked active cycles as PAID, causing return triggers to reject subsequent orders and omit revenue from future billing audits.
+
+Automated Gateway Settlement & Admin Decoupling: Completely removed manual payment confirmation controls from AdminDashboard.jsx. Royalties are now settled exclusively via vendor-initiated Razorpay transactions verified against administrative webhook signatures.  
+
+
+Premature Storefront Lockout on Anniversary Date
+
+JavaScript timestamp comparisons (new Date(renewal_date) < new Date()) evaluated the vendor's renewal date at midnight (00:00:00), instantly flagging the entire day as expired and locking storefronts while the midnight audit had yet to run.
+
+Synchronized Renewal Gating: Updated product and cart checks to only trigger lockouts when a vendor's cycle has elapsed and an unsettled bill (payment_status IN ('PENDING', 'OVERDUE')) actively exists.
+
+
+Operational Disruption on Day 365
+
+Freezing storefronts immediately on the anniversary date halted rental cash flows, preventing vendors from generating the necessary revenue to clear their licensing fees.
+
+3-Day Operational Grace Window: Implemented a non-disruptive 3-day grace period (period_end + INTERVAL '3 days'). Storefronts and checkouts remain open while an amber warning countdown alerts the vendor in their dashboard.
+
+
+Fiscal Anniversary Date Drifting
+
+Advancing licenses using CURRENT_DATE + INTERVAL '1 year' rewarded late payers with free operational days and drifted the anniversary date forward on each cycle.
+
+Fixed-Anchor Anniversary Rollover: Transitioned to fixed-anchor renewal math: subscription_start_date = subscription_renewal_date and subscription_renewal_date = (subscription_renewal_date + INTERVAL '1 year')::DATE, guaranteeing uninterrupted, mathematically precise 365-day fiscal accounting.
+
+
+Mid-Grace Period Order Contamination
+
+Orders returned during the 3-day grace window risked modifying the finalized PENDING invoice that the vendor was actively attempting to pay.
+
+Immutable Invoice Freezing: Configured database triggers to freeze any row marked 'PENDING' or 'PAID'. Any order returned after the cycle end date is routed into an 'ACCUMULATING' row for the subsequent cycle year without modifying the issued invoice.

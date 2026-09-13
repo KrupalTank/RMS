@@ -28,19 +28,85 @@ import {
   Shield,
   Clock,
   KeyRound,
+  Tag,
+  CreditCard,
+  Lock,
+  Eye,
+  EyeOff,
+  Percent,
+  Receipt,
+  Check,
 } from 'lucide-react';
 
 const VendorDashboard = () => {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState('inventory'); // 'inventory' | 'orders' | 'messages'
+  // 'inventory' | 'orders' | 'coupons' | 'gateway' | 'messages'
+  const [activeTab, setActiveTab] = useState('inventory');
 
-  // Data states
+  // Core Data states
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [coupons, setCoupons] = useState([]);
+  const [couponSubTab, setCouponSubTab] = useState('active'); // 'active' | 'completed'
+
+  const [gatewayStatus, setGatewayStatus] = useState({
+    isConfigured: false,
+    key_id: null,
+    subscription_start_date: null,
+    subscription_renewal_date: null,
+  });
+
+  // Annual SaaS Billing State
+  const [annualBillingState, setAnnualBillingState] = useState({
+    subscription: {},
+    pendingBill: null,
+    history: [],
+  });
+  const [payingBill, setPayingBill] = useState(false);
+
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState({ success: '', error: '' });
 
+  // Gateway Form State
+  const [gatewayForm, setGatewayForm] = useState({
+    razorpay_key_id: '',
+    razorpay_key_secret: '',
+  });
+  const [showSecret, setShowSecret] = useState(false);
+  const [savingGateway, setSavingGateway] = useState(false);
+
+  // Coupon Form Modal State
+  const [showCouponModal, setShowCouponModal] = useState(false);
+  const [couponForm, setCouponForm] = useState({
+    code: '',
+    discount_type: 'PERCENT',
+    discount_value: '',
+    max_discount_amount: '',
+    min_order_amount: '0',
+    min_rental_days: '1',
+    max_uses: '',
+    per_user_limit: '1',
+    valid_until: '',
+  });
+  const [savingCoupon, setSavingCoupon] = useState(false);
+
+  // Filter coupons into Active Campaigns vs Completed/Archived
+  const todayDateStr = new Date().toISOString().split('T')[0];
+
+  const activeCoupons = coupons.filter((c) => {
+    const isExpired = c.valid_until && c.valid_until.split('T')[0] < todayDateStr;
+    const isMaxedOut = c.max_uses && c.used_count >= c.max_uses;
+    return !c.is_archived && c.is_active && !isExpired && !isMaxedOut;
+  });
+
+  const completedCoupons = coupons.filter((c) => {
+    const isExpired = c.valid_until && c.valid_until.split('T')[0] < todayDateStr;
+    const isMaxedOut = c.max_uses && c.used_count >= c.max_uses;
+    return c.is_archived || !c.is_active || isExpired || isMaxedOut;
+  });
+
+  const displayedCoupons = couponSubTab === 'active' ? activeCoupons : completedCoupons;
   // Chat Data States
   const [conversations, setConversations] = useState([]);
   const [selectedConv, setSelectedConv] = useState(null);
@@ -59,8 +125,7 @@ const VendorDashboard = () => {
   const [handoverModalOrder, setHandoverModalOrder] = useState(null);
   const [enteredOtp, setEnteredOtp] = useState('');
   const [verifyingOtp, setVerifyingOtp] = useState(false);
-
-  const [assetSerial, setAssetSerial] = useState(''); // 👈 ADD THIS
+  const [assetSerial, setAssetSerial] = useState(''); // Optional Asset Tag/Serial
 
   // Product Form State
   const initialFormState = {
@@ -85,6 +150,8 @@ const VendorDashboard = () => {
   // Return Inspection Modal State
   const [inspectingOrder, setInspectingOrder] = useState(null);
   const [productCondition, setProductCondition] = useState('Good');
+  const [refundMethod, setRefundMethod] = useState('razorpay_api'); // 'razorpay_api' | 'offline'
+  const [offlineReference, setOfflineReference] = useState('');
   const [orderActionLoading, setOrderActionLoading] = useState(false);
 
   // Socket & Auto-scroll Refs
@@ -95,20 +162,47 @@ const VendorDashboard = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  // 1. Fetch initial vendor inventory and orders[cite: 7]
+  // Helper: load Razorpay checkout script dynamically
+  const loadRazorpayScript = () => {
+    return new Promise((resolve) => {
+      if (window.Razorpay) {
+        resolve(true);
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+  };
+
+  // 1. Fetch initial vendor inventory, orders, coupons, gateway status, and annual billing
   const fetchData = async () => {
     setLoading(true);
     setBanner({ success: '', error: '' });
     try {
-      const [prodRes, catRes, ordRes] = await Promise.all([
+      const [prodRes, catRes, ordRes, cpnRes, gtwRes, billRes] = await Promise.all([
         api.get('/vendor/getProducts'),
         api.get('/vendor/getCategories'),
         api.get('/vendor/getOrders'),
+        api.get('/vendor/coupons'),
+        api.get('/vendor/gatewayStatus'),
+        api.get('/vendor/annualBillingStatus').catch(() => ({ data: { success: false } })),
       ]);
 
       if (prodRes.data.success) setProducts(prodRes.data.products);
       if (catRes.data.success) setCategories(catRes.data.categories);
       if (ordRes.data.success) setOrders(ordRes.data.orders);
+      if (cpnRes.data.success) setCoupons(cpnRes.data.coupons);
+      if (gtwRes.data.success) setGatewayStatus(gtwRes.data);
+      if (billRes.data.success) {
+        setAnnualBillingState({
+          subscription: billRes.data.subscription || {},
+          pendingBill: billRes.data.pendingBill || null,
+          history: billRes.data.history || [],
+        });
+      }
     } catch (err) {
       setBanner({
         success: '',
@@ -138,7 +232,6 @@ const VendorDashboard = () => {
       const res = await api.get(`/chat/messages/${convId}`);
       if (res.data.success) {
         setMessages(res.data.messages || []);
-        // Reset unread count locally in list
         setConversations((prev) =>
           prev.map((c) => (c.id === convId ? { ...c, unread_vendor_count: 0 } : c))
         );
@@ -172,17 +265,11 @@ const VendorDashboard = () => {
     });
 
     socket.on('ORDER_STATUS_CHANGED', (data) => {
-      // Option A: Instantly update order state in-place
       setOrders((prevOrders) =>
-        prevOrders.map((o) =>
-          o.id === data.orderId ? { ...o, status: data.newStatus } : o
-        )
+        prevOrders.map((o) => (o.id === data.orderId ? { ...o, status: data.newStatus } : o))
       );
-      // Option B: Also call fetchData() to sync counts if needed
       fetchData();
     });
-
-   
 
     return () => {
       socket.disconnect();
@@ -257,6 +344,7 @@ const VendorDashboard = () => {
     }
   };
 
+  // Handshake PIN verification with optional serial tag
   const handleVerifyOtpSubmit = async (e) => {
     e.preventDefault();
     if (!enteredOtp || enteredOtp.trim().length !== 6) {
@@ -269,7 +357,7 @@ const VendorDashboard = () => {
       const res = await api.post('/vendor/verifyHandoverOtp', {
         order_id: handoverModalOrder.id,
         otp: enteredOtp.trim(),
-        assigned_serial_number: assetSerial.trim(), // 👈 Optional field passed here
+        assigned_serial_number: assetSerial.trim() || null,
       });
 
       if (res.data.success) {
@@ -286,8 +374,182 @@ const VendorDashboard = () => {
     }
   };
 
-  // 2. Open Add Product Modal[cite: 7]
+  // Save Gateway Credentials
+  const handleSaveGateway = async (e) => {
+    e.preventDefault();
+    if (!gatewayForm.razorpay_key_id.trim() || !gatewayForm.razorpay_key_secret.trim()) {
+      alert('Both Razorpay Key ID and Key Secret are required.');
+      return;
+    }
+
+    setSavingGateway(true);
+    try {
+      const res = await api.put('/vendor/updateGatewayCredentials', gatewayForm);
+      if (res.data.success) {
+        setBanner({ success: 'Razorpay keys securely updated and encrypted.', error: '' });
+        setGatewayForm({ razorpay_key_id: '', razorpay_key_secret: '' });
+        fetchData();
+      }
+    } catch (err) {
+      setBanner({
+        success: '',
+        error: err.response?.data?.message || 'Failed to update gateway credentials.',
+      });
+    } finally {
+      setSavingGateway(false);
+    }
+  };
+
+  // Pay 5% Annual SaaS Royalty Bill
+  const handlePayAnnualBill = async (billingId) => {
+    setPayingBill(true);
+    try {
+      const isLoaded = await loadRazorpayScript();
+      if (!isLoaded) {
+        alert('Could not connect to Razorpay SDK. Check your internet connection.');
+        setPayingBill(false);
+        return;
+      }
+
+      const res = await api.post('/vendor/createAnnualBillingOrder', {
+        billing_id: billingId,
+      });
+
+      if (res.data.zero_due) {
+        setBanner({ success: 'Annual license renewed (Zero earnings this period).', error: '' });
+        fetchData();
+        setPayingBill(false);
+        return;
+      }
+
+      const { key_id, razorpay_order_id, amount } = res.data;
+
+      const options = {
+        key: key_id,
+        amount: amount,
+        currency: 'INR',
+        name: 'RMS Platform Administration',
+        description: '5% Annual Software Royalty Settlement',
+        order_id: razorpay_order_id,
+        handler: async (response) => {
+          try {
+            const verifyRes = await api.post('/vendor/verifyAnnualBillingPayment', {
+              billing_id: billingId,
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+            });
+
+            if (verifyRes.data.success) {
+              setBanner({
+                success: '🎉 Annual 5% Royalty paid! Your license has been extended for 1 full year.',
+                error: '',
+              });
+              fetchData();
+            }
+          } catch (vErr) {
+            alert(vErr.response?.data?.message || 'Payment signature verification failed.');
+          } finally {
+            setPayingBill(false);
+          }
+        },
+        prefill: {
+          name: user.full_name,
+          email: user.email,
+          contact: user.phone || '',
+        },
+        theme: { color: '#059669' },
+        modal: {
+          ondismiss: () => setPayingBill(false),
+        },
+      };
+
+      const razorpayInstance = new window.Razorpay(options);
+      razorpayInstance.open();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to initialize billing checkout.');
+      setPayingBill(false);
+    }
+  };
+
+  // Create Store Coupon
+  const handleCreateCoupon = async (e) => {
+    e.preventDefault();
+    if (!couponForm.code.trim() || !couponForm.discount_value) {
+      alert('Coupon code and discount value are required.');
+      return;
+    }
+
+    setSavingCoupon(true);
+    try {
+      const payload = {
+        code: couponForm.code.trim().toUpperCase(),
+        discount_type: couponForm.discount_type,
+        discount_value: parseFloat(couponForm.discount_value),
+        max_discount_amount: couponForm.max_discount_amount
+          ? parseFloat(couponForm.max_discount_amount)
+          : null,
+        min_order_amount: parseFloat(couponForm.min_order_amount || 0),
+        min_rental_days: parseInt(couponForm.min_rental_days || 1, 10),
+        max_uses: couponForm.max_uses ? parseInt(couponForm.max_uses, 10) : null,
+        per_user_limit: parseInt(couponForm.per_user_limit || 1, 10),
+        valid_until: couponForm.valid_until ? new Date(couponForm.valid_until).toISOString() : null,
+      };
+
+      const res = await api.post('/vendor/createCoupon', payload);
+      if (res.data.success) {
+        setBanner({ success: res.data.message, error: '' });
+        setShowCouponModal(false);
+        setCouponForm({
+          code: '',
+          discount_type: 'PERCENT',
+          discount_value: '',
+          max_discount_amount: '',
+          min_order_amount: '0',
+          min_rental_days: '1',
+          max_uses: '',
+          per_user_limit: '1',
+          valid_until: '',
+        });
+        fetchData();
+      }
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to create coupon.');
+    } finally {
+      setSavingCoupon(false);
+    }
+  };
+
+  const handleToggleCoupon = async (id) => {
+    try {
+      const res = await api.put(`/vendor/toggleCoupon/${id}`);
+      if (res.data.success) {
+        fetchData();
+      }
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to toggle coupon.');
+    }
+  };
+
+  const handleDeleteCoupon = async (id) => {
+    if (!window.confirm('Delete this store promotional coupon?')) return;
+    try {
+      const res = await api.delete(`/vendor/deleteCoupon/${id}`);
+      if (res.data.success) {
+        fetchData();
+      }
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to delete coupon.');
+    }
+  };
+
+  // Product Modals & Handlers
   const handleOpenAddModal = () => {
+    if (annualBillingState.pendingBill) {
+      alert('License Expired: Please settle your pending 5% annual royalty bill under "Payment Gateway & License" before adding new inventory.');
+      setActiveTab('gateway');
+      return;
+    }
     setIsEditing(false);
     setEditingProductId(null);
     setFormData(initialFormState);
@@ -296,8 +558,12 @@ const VendorDashboard = () => {
     setShowProductModal(true);
   };
 
-  // 3. Open Edit Product Modal[cite: 7]
   const handleOpenEditModal = (product) => {
+    if (annualBillingState.pendingBill) {
+      alert('License Expired: Please settle your pending 5% annual royalty bill under "Payment Gateway & License" before editing inventory.');
+      setActiveTab('gateway');
+      return;
+    }
     setIsEditing(true);
     setEditingProductId(product.id);
 
@@ -326,13 +592,11 @@ const VendorDashboard = () => {
     setShowProductModal(true);
   };
 
-  // 4. Handle Image File Selection (Max 6 total)[cite: 7]
   const ALLOWED_TYPES = ['image/jpeg', 'image/jpg', 'image/png'];
   const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png'];
 
   const handleFileChange = (e) => {
     const selectedFiles = Array.from(e.target.files);
-
     const invalidFiles = selectedFiles.filter((file) => {
       const fileExt = '.' + file.name.split('.').pop().toLowerCase();
       const isMimeValid = ALLOWED_TYPES.includes(file.type.toLowerCase());
@@ -347,9 +611,8 @@ const VendorDashboard = () => {
     }
 
     const availableSlots = 6 - (existingImages.length + newImageFiles.length);
-
     if (selectedFiles.length > availableSlots) {
-      alert(`You can only have up to 6 images in total. ${availableSlots} slot(s) remaining.`);
+      alert(`Maximum 6 images allowed. ${availableSlots} slot(s) remaining.`);
       e.target.value = '';
       return;
     }
@@ -366,7 +629,6 @@ const VendorDashboard = () => {
     setNewImageFiles((prev) => prev.filter((_, idx) => idx !== indexToRemove));
   };
 
-  // 5. Submit Add / Edit Product[cite: 7]
   const handleSaveProduct = async (e) => {
     e.preventDefault();
     setBanner({ success: '', error: '' });
@@ -423,11 +685,9 @@ const VendorDashboard = () => {
     }
   };
 
-  // 6. Create Category[cite: 7]
   const handleAddCategory = async (e) => {
     e.preventDefault();
     if (!newCategoryName.trim()) return;
-
     try {
       const res = await api.post('/vendor/addCategory', { name: newCategoryName.trim() });
       if (res.data.success) {
@@ -441,9 +701,9 @@ const VendorDashboard = () => {
     }
   };
 
-  // 7. Order Status Management (Cancel / Return Inspection)[cite: 7]
   const handleCancelOrder = async (orderId) => {
-    if (!window.confirm('Are you sure you want to cancel this booking before delivery?')) return;
+    if (!window.confirm('Cancel this booking before delivery? A 100% refund will be issued to the customer.'))
+      return;
     setOrderActionLoading(true);
     try {
       const res = await api.post('/vendor/changeOrderStatus', {
@@ -451,7 +711,7 @@ const VendorDashboard = () => {
         status: 'Cancelled',
       });
       if (res.data.success) {
-        setBanner({ success: 'Order cancelled.', error: '' });
+        setBanner({ success: 'Order cancelled and customer refunded.', error: '' });
         fetchData();
       }
     } catch (err) {
@@ -465,18 +725,22 @@ const VendorDashboard = () => {
     e.preventDefault();
     setOrderActionLoading(true);
     try {
-      const res = await api.post('/vendor/changeOrderStatus', {
+      const payload = {
         order_id: inspectingOrder.id,
         status: 'Returned',
         product_condition: productCondition,
-      });
+        offline_refund_reference: refundMethod === 'offline' ? offlineReference.trim() : null,
+      };
+
+      const res = await api.post('/vendor/changeOrderStatus', payload);
 
       if (res.data.success) {
         setBanner({
-          success: `Return confirmed (${productCondition} condition). Automatic escrow settlement applied.`,
+          success: res.data.message || 'Return completed and deposit settled directly.',
           error: '',
         });
         setInspectingOrder(null);
+        setOfflineReference('');
         fetchData();
       }
     } catch (err) {
@@ -504,17 +768,22 @@ const VendorDashboard = () => {
     0
   );
 
+  const isRenewalDue =
+    annualBillingState.pendingBill ||
+    (gatewayStatus.subscription_renewal_date &&
+      new Date(gatewayStatus.subscription_renewal_date) <= new Date());
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-      {/* Top Header[cite: 7] */}
+      {/* Top Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-200 pb-4">
         <div>
           <h1 className="text-2xl font-extrabold text-gray-900 flex items-center gap-2">
             <Store className="w-6 h-6 text-emerald-600" />
-            <span>Vendor Management Portal</span>
+            <span>Store Operations Dashboard</span>
           </h1>
           <p className="text-xs text-gray-500 mt-1">
-            Manage your rental catalog, configure duration tier rates, coordinate logistics, and inspect returns[cite: 7].
+            Zero-intermediation SaaS workspace: Manage inventory, promo codes, gateway keys, and orders.
           </p>
         </div>
 
@@ -534,7 +803,99 @@ const VendorDashboard = () => {
         </div>
       </div>
 
-      {/* Status Notifications[cite: 7] */}
+      {/* Dynamic Annual Licensing & Renewal Alert */}
+      {(() => {
+        if (!gatewayStatus.subscription_renewal_date) return null;
+
+        const now = new Date();
+        const renewalDate = new Date(gatewayStatus.subscription_renewal_date);
+        
+        // Calculate grace period expiration (period_end + 3 days)
+        const graceEndDate = new Date(renewalDate);
+        graceEndDate.setDate(graceEndDate.getDate() + 3);
+
+        const diffTime = graceEndDate.getTime() - now.getTime();
+        const graceDaysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        if (annualBillingState.pendingBill) {
+          const isHardLocked = graceDaysLeft <= 0;
+
+          return (
+            <div
+              className={`p-4 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs shadow-sm border ${
+                isHardLocked
+                  ? 'bg-rose-50 border-rose-200 text-rose-900'
+                  : 'bg-amber-50 border-amber-200 text-amber-900'
+              }`}
+            >
+              <div className="flex items-start gap-2.5">
+                <AlertCircle
+                  className={`w-5 h-5 flex-shrink-0 mt-0.5 ${
+                    isHardLocked ? 'text-rose-600' : 'text-amber-600'
+                  }`}
+                />
+                <div>
+                  <p className="font-extrabold text-sm">
+                    {isHardLocked
+                      ? `Annual License Overdue: Storefront Paused`
+                      : `Annual RMS License Due: ₹${parseFloat(
+                          annualBillingState.pendingBill.platform_fee_due
+                        ).toFixed(2)} (${graceDaysLeft} Grace Day${graceDaysLeft !== 1 ? 's' : ''} Remaining)`}
+                  </p>
+                  <p className="mt-0.5">
+                    {isHardLocked
+                      ? `Your 3-day grace period has expired. Customer checkouts and inventory updates are locked until the 5% platform royalty (₹${parseFloat(
+                          annualBillingState.pendingBill.platform_fee_due
+                        ).toFixed(2)}) is settled.`
+                      : `Your 12-month period has concluded. Settle your 5% platform royalty before the 3-day grace window ends to keep your storefront open.`}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => handlePayAnnualBill(annualBillingState.pendingBill.id)}
+                disabled={payingBill}
+                className={`px-4 py-2 text-white font-bold rounded-lg transition shadow-sm flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50 ${
+                  isHardLocked
+                    ? 'bg-rose-600 hover:bg-rose-700'
+                    : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
+              >
+                <CreditCard className="w-4 h-4" />
+                <span>
+                  {payingBill
+                    ? 'Connecting...'
+                    : `Pay ₹${parseFloat(annualBillingState.pendingBill.platform_fee_due).toFixed(
+                        2
+                      )} Royalty`}
+                </span>
+              </button>
+            </div>
+          );
+        }
+
+        return null;
+      })()}
+
+      {/* Gateway Alert if not configured */}
+      {!gatewayStatus.isConfigured && (
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between text-amber-800 text-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5 flex-shrink-0 text-amber-600" />
+            <span>
+              <b>Action Required:</b> Your Razorpay Gateway is not configured. Customers cannot book your gear until your API keys are saved.
+            </span>
+          </div>
+          <button
+            onClick={() => setActiveTab('gateway')}
+            className="px-3 py-1.5 bg-amber-600 text-white rounded-lg font-bold hover:bg-amber-700 transition flex-shrink-0"
+          >
+            Configure Gateway
+          </button>
+        </div>
+      )}
+
+      {/* Status Notifications */}
       {banner.success && (
         <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2 text-xs text-emerald-800">
           <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
@@ -548,42 +909,69 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* Tabs Switcher[cite: 7] */}
-      <div className="flex border-b border-gray-200 space-x-8">
+      {/* Navigation Tabs Switcher */}
+      <div className="flex border-b border-gray-200 space-x-6 overflow-x-auto">
         <button
           onClick={() => setActiveTab('inventory')}
-          className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition ${
+          className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
             activeTab === 'inventory'
               ? 'border-emerald-600 text-emerald-600'
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
         >
           <Layers className="w-4 h-4" />
-          <span>My Inventory ({products.length})</span>
+          <span>Inventory ({products.length})</span>
         </button>
 
         <button
           onClick={() => setActiveTab('orders')}
-          className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition ${
+          className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
             activeTab === 'orders'
               ? 'border-emerald-600 text-emerald-600'
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
         >
           <Package className="w-4 h-4" />
-          <span>Rental Orders & Returns ({orders.length})</span>
+          <span>Orders & Returns ({orders.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('coupons')}
+          className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
+            activeTab === 'coupons'
+              ? 'border-emerald-600 text-emerald-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Tag className="w-4 h-4" />
+          <span>Promotions & Coupons ({coupons.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('gateway')}
+          className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
+            activeTab === 'gateway'
+              ? 'border-emerald-600 text-emerald-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <CreditCard className="w-4 h-4" />
+          <span>Payment Gateway & License</span>
+          {annualBillingState.pendingBill && (
+            <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping inline-block" />
+          )}
         </button>
 
         <button
           onClick={() => setActiveTab('messages')}
-          className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition ${
+          className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
             activeTab === 'messages'
               ? 'border-emerald-600 text-emerald-600'
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
         >
           <MessageSquare className="w-4 h-4" />
-          <span>Customer Inquiries & Messages</span>
+          <span>Customer Messages</span>
           {totalUnreadMessages > 0 && (
             <span className="bg-rose-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full">
               {totalUnreadMessages}
@@ -592,14 +980,14 @@ const VendorDashboard = () => {
         </button>
       </div>
 
-      {/* TAB 1: INVENTORY & PRODUCTS[cite: 7] */}
+      {/* TAB 1: INVENTORY & PRODUCTS */}
       {activeTab === 'inventory' && (
         <div className="space-y-4">
           {products.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-gray-200 space-y-3">
               <Layers className="w-12 h-12 text-gray-300 mx-auto" />
               <h3 className="text-sm font-bold text-gray-800">No products in your catalog</h3>
-              <p className="text-xs text-gray-500">Add equipment and list items for rent[cite: 7].</p>
+              <p className="text-xs text-gray-500">Add equipment and list items for rent.</p>
               <button
                 onClick={handleOpenAddModal}
                 className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-semibold"
@@ -620,11 +1008,7 @@ const VendorDashboard = () => {
                   >
                     <div>
                       <div className="relative h-44 w-full bg-gray-100">
-                        <img
-                          src={primaryImg}
-                          alt={prod.title}
-                          className="w-full h-full object-cover"
-                        />
+                        <img src={primaryImg} alt={prod.title} className="w-full h-full object-cover" />
                         <span className="absolute top-2 right-2 bg-gray-900/80 text-white text-[11px] font-semibold px-2 py-0.5 rounded backdrop-blur-sm">
                           {images.length} Image{images.length > 1 ? 's' : ''}
                         </span>
@@ -646,15 +1030,21 @@ const VendorDashboard = () => {
                         <div className="bg-gray-50 p-2.5 rounded-lg border border-gray-100 grid grid-cols-3 gap-1.5 text-center text-xs">
                           <div className="border-r border-gray-200 pr-1">
                             <span className="block text-[10px] text-gray-400 font-medium">1–4 Days</span>
-                            <span className="font-bold text-gray-800">₹{parseFloat(prod.rent_per_day_1_4).toFixed(0)}</span>
+                            <span className="font-bold text-gray-800">
+                              ₹{parseFloat(prod.rent_per_day_1_4).toFixed(0)}
+                            </span>
                           </div>
                           <div className="border-r border-gray-200 pr-1">
                             <span className="block text-[10px] text-gray-400 font-medium">5–9 Days</span>
-                            <span className="font-bold text-gray-800">₹{parseFloat(prod.rent_per_day_5_9).toFixed(0)}</span>
+                            <span className="font-bold text-gray-800">
+                              ₹{parseFloat(prod.rent_per_day_5_9).toFixed(0)}
+                            </span>
                           </div>
                           <div>
                             <span className="block text-[10px] text-gray-400 font-medium">10+ Days</span>
-                            <span className="font-bold text-gray-800">₹{parseFloat(prod.rent_per_day_10_onwards).toFixed(0)}</span>
+                            <span className="font-bold text-gray-800">
+                              ₹{parseFloat(prod.rent_per_day_10_onwards).toFixed(0)}
+                            </span>
                           </div>
                         </div>
 
@@ -736,15 +1126,17 @@ const VendorDashboard = () => {
                       >
                         📄 Agreement
                       </button>
-                      <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full ${
-                        ord.status === 'Lock'
-                          ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                          : ord.status === 'With Customer'
-                          ? 'bg-blue-50 text-blue-800 border border-blue-200'
-                          : ord.status === 'Returned'
-                          ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                          : 'bg-gray-100 text-gray-700'
-                      }`}>
+                      <span
+                        className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full ${
+                          ord.status === 'Lock'
+                            ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                            : ord.status === 'With Customer'
+                            ? 'bg-blue-50 text-blue-800 border border-blue-200'
+                            : ord.status === 'Returned'
+                            ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                            : 'bg-gray-100 text-gray-700'
+                        }`}
+                      >
                         {ord.status}
                       </span>
                     </div>
@@ -759,11 +1151,15 @@ const VendorDashboard = () => {
                       <span>
                         Dates: {ord.start_date.split('T')[0]} → {ord.end_date.split('T')[0]}
                       </span>
+                      {ord.assigned_serial_number && (
+                        <span className="text-indigo-600 font-bold">
+                          Asset S/N: {ord.assigned_serial_number}
+                        </span>
+                      )}
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2 w-full md:w-auto justify-end">
-                    {/* Direct Chat with Customer */}
                     <button
                       onClick={() => handleOpenOrderChat(ord)}
                       className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-lg border border-blue-200 transition flex items-center gap-1"
@@ -798,7 +1194,12 @@ const VendorDashboard = () => {
 
                     {ord.status === 'With Customer' && (
                       <button
-                        onClick={() => setInspectingOrder(ord)}
+                        onClick={() => {
+                          setInspectingOrder(ord);
+                          setProductCondition('Good');
+                          setRefundMethod('razorpay_api');
+                          setOfflineReference('');
+                        }}
                         className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm transition"
                       >
                         Inspect & Accept Return
@@ -812,7 +1213,391 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* TAB 3: TWO-PANE INBOX & MESSAGES (Fully Responsive & Scrollable) */}
+      {/* TAB 3: PROMOTIONS & STORE COUPONS */}
+      {activeTab === 'coupons' && (
+        <div className="space-y-4">
+          {/* Header Card */}
+          <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+            <div>
+              <h2 className="text-sm font-bold text-gray-900">Your Store Promotional Campaigns</h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Create custom promo codes to boost rentals. Discounts deduct strictly from your rental gross and never touch security deposits.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowCouponModal(true)}
+              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm transition flex items-center gap-1.5"
+            >
+              <Plus className="w-4 h-4" /> Create Coupon Code
+            </button>
+          </div>
+
+          {/* Sub-Tab Switcher */}
+          <div className="flex items-center gap-2 border-b border-gray-200 pb-2 text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => setCouponSubTab('active')}
+              className={`px-3.5 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                couponSubTab === 'active'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              <span>Active Campaigns</span>
+              <span
+                className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                  couponSubTab === 'active' ? 'bg-emerald-700 text-white' : 'bg-gray-200 text-gray-700'
+                }`}
+              >
+                {activeCoupons.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCouponSubTab('completed')}
+              className={`px-3.5 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                couponSubTab === 'completed'
+                  ? 'bg-gray-800 text-white shadow-sm'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              <span>Past & Archived</span>
+              <span
+                className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                  couponSubTab === 'completed' ? 'bg-gray-700 text-white' : 'bg-gray-200 text-gray-700'
+                }`}
+              >
+                {completedCoupons.length}
+              </span>
+            </button>
+          </div>
+
+          {/* Empty State vs Card Grid */}
+          {displayedCoupons.length === 0 ? (
+            <div className="text-center py-16 bg-white rounded-xl border border-gray-200 space-y-2">
+              <Tag className="w-10 h-10 text-gray-300 mx-auto" />
+              <h3 className="text-sm font-bold text-gray-800">
+                {couponSubTab === 'active' ? 'No active store promotions' : 'No past or archived promotions'}
+              </h3>
+              <p className="text-xs text-gray-500">
+                {couponSubTab === 'active'
+                  ? 'Create discount coupons like "WEEKEND15" or "FIRST500".'
+                  : 'Coupons that are expired, fully redeemed, deactivated, or archived appear here.'}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {displayedCoupons.map((c) => {
+                const isExpired = c.valid_until && c.valid_until.split('T')[0] < todayDateStr;
+                const isMaxedOut = c.max_uses && c.used_count >= c.max_uses;
+
+                return (
+                  <div
+                    key={c.id}
+                    className={`bg-white p-4 rounded-xl border flex flex-col justify-between gap-3 shadow-sm ${
+                      c.is_active && !c.is_archived && !isExpired && !isMaxedOut
+                        ? 'border-emerald-200'
+                        : 'border-gray-200 opacity-70 bg-gray-50/50'
+                    }`}
+                  >
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-black text-base text-emerald-800 tracking-wider">
+                          {c.code}
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            c.is_archived
+                              ? 'bg-gray-200 text-gray-700'
+                              : isMaxedOut
+                              ? 'bg-purple-100 text-purple-800'
+                              : isExpired
+                              ? 'bg-rose-100 text-rose-800'
+                              : c.is_active
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {c.is_archived
+                            ? 'Archived'
+                            : isMaxedOut
+                            ? 'Fully Redeemed'
+                            : isExpired
+                            ? 'Expired'
+                            : c.is_active
+                            ? 'Active'
+                            : 'Paused'}
+                        </span>
+                      </div>
+
+                      <p className="text-xs font-bold text-gray-800">
+                        {c.discount_type === 'FLAT'
+                          ? `₹${parseFloat(c.discount_value)} Flat Discount`
+                          : `${parseFloat(c.discount_value)}% Discount`}
+                        {c.max_discount_amount && (
+                          <span className="text-gray-500 font-normal">
+                            {' '}
+                            (Capped at ₹{parseFloat(c.max_discount_amount)})
+                          </span>
+                        )}
+                      </p>
+
+                      <div className="text-[11px] text-gray-500 space-y-0.5 pt-1 border-t border-gray-100">
+                        <p>
+                          • Min Duration: <b>{c.min_rental_days} day(s)</b>
+                        </p>
+                        <p>
+                          • Min Booking Amount: <b>₹{parseFloat(c.min_order_amount)}</b>
+                        </p>
+                        <p>
+                          • Redemptions: <b>{c.used_count}</b> / {c.max_uses || 'Unlimited'}
+                        </p>
+                        {c.valid_until && (
+                          <p>
+                            • Expiry: <b>{new Date(c.valid_until).toLocaleDateString()}</b>
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+                      {!c.is_archived ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleCoupon(c.id)}
+                            className={`text-xs font-semibold px-2.5 py-1 rounded transition ${
+                              c.is_active
+                                ? 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                                : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700'
+                            }`}
+                          >
+                            {c.is_active ? 'Deactivate' : 'Activate'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteCoupon(c.id)}
+                            className="text-red-500 hover:text-red-700 p-1 rounded"
+                            title="Archive coupon"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </>
+                      ) : (
+                        <span className="text-[11px] text-gray-400 italic">Archived (Audits preserved)</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 4: PAYMENT GATEWAY & SAAS LICENSE SETTINGS */}
+      {activeTab === 'gateway' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Razorpay Key Settings Form */}
+            <div className="lg:col-span-7 bg-white p-6 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+              <div className="flex items-center gap-2 border-b border-gray-100 pb-3">
+                <CreditCard className="w-5 h-5 text-emerald-600" />
+                <div>
+                  <h3 className="text-sm font-extrabold text-gray-900">Direct Razorpay Merchant Keys</h3>
+                  <p className="text-xs text-gray-500">100% of rental fees & deposits land directly in this account.</p>
+                </div>
+              </div>
+
+              <form onSubmit={handleSaveGateway} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">
+                    Razorpay Key ID (Public Key):
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={gatewayForm.razorpay_key_id}
+                    onChange={(e) => setGatewayForm({ ...gatewayForm, razorpay_key_id: e.target.value })}
+                    placeholder={gatewayStatus.key_id || 'rzp_live_XXXXXXXXXXXXXX'}
+                    className="w-full text-xs p-2.5 border border-gray-300 rounded-xl font-mono focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">
+                    Razorpay Key Secret (Encrypted at rest):
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showSecret ? 'text' : 'password'}
+                      required
+                      value={gatewayForm.razorpay_key_secret}
+                      onChange={(e) => setGatewayForm({ ...gatewayForm, razorpay_key_secret: e.target.value })}
+                      placeholder="Enter new secret key to update"
+                      className="w-full text-xs p-2.5 border border-gray-300 rounded-xl font-mono focus:ring-2 focus:ring-emerald-500 focus:outline-none pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSecret(!showSecret)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    >
+                      {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    🔒 Secrets are stored securely using AES-256-GCM encryption and never exposed via public APIs.
+                  </p>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={savingGateway}
+                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm transition disabled:opacity-50"
+                >
+                  {savingGateway ? 'Encrypting & Saving...' : 'Save & Activate Direct Gateway'}
+                </button>
+              </form>
+            </div>
+
+            {/* Annual SaaS Licensing Details */}
+            <div className="lg:col-span-5 bg-gradient-to-br from-gray-900 to-slate-800 text-white p-6 rounded-2xl shadow-sm space-y-4 flex flex-col justify-between">
+              <div className="space-y-3 text-xs">
+                <div className="flex items-center gap-2 border-b border-white/10 pb-3">
+                  <Shield className="w-5 h-5 text-emerald-400" />
+                  <div>
+                    <h3 className="text-sm font-extrabold text-white">RMS Software License</h3>
+                    <p className="text-[11px] text-gray-300">5% Annual Platform Royalty Agreement</p>
+                  </div>
+                </div>
+
+                <div className="bg-white/5 p-3 rounded-xl border border-white/10 space-y-1">
+                  <span className="text-gray-400 block text-[10px] uppercase font-bold">Subscription Status</span>
+                  <span
+                    className={`font-extrabold text-sm ${
+                      annualBillingState.pendingBill &&
+                      new Date(gatewayStatus.subscription_renewal_date) <= new Date()
+                        ? 'text-rose-400'
+                        : 'text-emerald-400'
+                    }`}
+                  >
+                    {annualBillingState.pendingBill &&
+                    new Date(gatewayStatus.subscription_renewal_date) <= new Date()
+                      ? 'License Renewal Overdue'
+                      : 'Active Partner License'}
+                  </span>
+                </div>
+
+                <div className="flex justify-between text-gray-300">
+                  <span>Start Date:</span>
+                  <span className="font-bold text-white">
+                    {gatewayStatus.subscription_start_date
+                      ? new Date(gatewayStatus.subscription_start_date).toLocaleDateString()
+                      : 'N/A'}
+                  </span>
+                </div>
+
+                <div className="flex justify-between text-gray-300">
+                  <span>Anniversary Renewal Date:</span>
+                  <span className="font-bold text-amber-300">
+                    {gatewayStatus.subscription_renewal_date
+                      ? new Date(gatewayStatus.subscription_renewal_date).toLocaleDateString()
+                      : 'N/A'}
+                  </span>
+                </div>
+
+                {annualBillingState.pendingBill && (
+                  <div className="p-3 bg-rose-950/60 border border-rose-400/40 rounded-xl space-y-2">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-rose-200">5% Platform Royalty Due:</span>
+                      <span className="text-base font-black text-rose-300">
+                        ₹{parseFloat(annualBillingState.pendingBill.platform_fee_due).toFixed(2)}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => handlePayAnnualBill(annualBillingState.pendingBill.id)}
+                      disabled={payingBill}
+                      className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition text-xs shadow-sm flex items-center justify-center gap-1.5"
+                    >
+                      <CreditCard className="w-4 h-4" />
+                      <span>{payingBill ? 'Connecting...' : 'Pay Bill via Platform Razorpay'}</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-3 bg-emerald-950/40 border border-emerald-500/30 rounded-xl text-[11px] text-emerald-200 leading-relaxed">
+                • <b>0% Per-Order Commission:</b> Keep 100% of all rental fees and deposits.<br/>
+                • <b>5% Annual Royalty:</b> Calculated only on your completed net rental earnings at the end of each 12-month billing period.
+              </div>
+            </div>
+          </div>
+
+          {/* Annual Billing Invoices History */}
+          <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-4">
+            <h3 className="text-sm font-extrabold text-gray-900 flex items-center gap-2">
+              <Receipt className="w-4 h-4 text-emerald-600" />
+              <span>Annual Licensing & Royalty Statements</span>
+            </h3>
+
+            {annualBillingState.history.length === 0 ? (
+              <p className="text-xs text-gray-400 italic py-2">
+                No annual royalty billing cycles finalized yet. Statements are generated annually upon your anniversary renewal date.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-gray-50 text-gray-500 font-bold border-b">
+                    <tr>
+                      <th className="p-2.5">Billing Year</th>
+                      <th className="p-2.5">Period</th>
+                      <th className="p-2.5">Completed Orders</th>
+                      <th className="p-2.5">Total Net Rental Earnings</th>
+                      <th className="p-2.5">5% Platform Royalty</th>
+                      <th className="p-2.5">Status</th>
+                      <th className="p-2.5">Settlement Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {annualBillingState.history.map((b) => (
+                      <tr key={b.id}>
+                        <td className="p-2.5 font-bold text-gray-900">Year {b.billing_year}</td>
+                        <td className="p-2.5 text-gray-600">
+                          {new Date(b.period_start).toLocaleDateString()} → {new Date(b.period_end).toLocaleDateString()}
+                        </td>
+                        <td className="p-2.5 font-semibold text-gray-800">{b.total_orders_completed} orders</td>
+                        <td className="p-2.5 font-bold text-gray-900">
+                          ₹{parseFloat(b.total_net_rental_earnings).toFixed(2)}
+                        </td>
+                        <td className="p-2.5 font-black text-rose-600">
+                          ₹{parseFloat(b.platform_fee_due).toFixed(2)}
+                        </td>
+                        <td className="p-2.5">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              b.payment_status === 'PAID'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-rose-100 text-rose-800 animate-pulse'
+                            }`}
+                          >
+                            {b.payment_status}
+                          </span>
+                        </td>
+                        <td className="p-2.5 text-gray-500">
+                          {b.paid_at ? new Date(b.paid_at).toLocaleDateString() : 'Pending'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 5: MESSAGES & CHAT */}
       {activeTab === 'messages' && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden flex flex-col lg:grid lg:grid-cols-12 min-h-[620px] max-h-[85vh]">
           {/* Left Pane: Conversation Threads */}
@@ -822,9 +1607,7 @@ const VendorDashboard = () => {
                 <MessageSquare className="w-4 h-4 text-emerald-600" />
                 <span>Customer Inquiries</span>
               </h2>
-              <p className="text-[11px] text-gray-500 mt-0.5">
-                Pre-booking inquiries & order coordination
-              </p>
+              <p className="text-[11px] text-gray-500 mt-0.5">Pre-booking inquiries & order coordination</p>
             </div>
 
             <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
@@ -833,7 +1616,7 @@ const VendorDashboard = () => {
                   <MessageSquare className="w-8 h-8 text-gray-300 mx-auto" />
                   <p className="text-xs font-bold text-gray-600">No messages yet</p>
                   <p className="text-[11px] text-gray-400">
-                    When customers ask about your products, their messages will appear here.
+                    When customers inquire about your equipment, conversations will appear here.
                   </p>
                 </div>
               ) : (
@@ -861,9 +1644,7 @@ const VendorDashboard = () => {
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-1">
-                          <h4 className="text-xs font-bold text-gray-900 truncate">
-                            {conv.customer_name}
-                          </h4>
+                          <h4 className="text-xs font-bold text-gray-900 truncate">{conv.customer_name}</h4>
                           <span className="text-[10px] text-gray-400 flex-shrink-0">
                             {new Date(conv.last_message_at).toLocaleTimeString([], {
                               hour: '2-digit',
@@ -897,7 +1678,6 @@ const VendorDashboard = () => {
           <div className="lg:col-span-8 flex flex-col flex-1 min-h-[420px] lg:h-full bg-white min-w-0">
             {selectedConv ? (
               <>
-                {/* Chat Header */}
                 <div className="p-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between flex-shrink-0">
                   <div className="flex items-center gap-2.5 min-w-0">
                     <div className="p-1.5 bg-emerald-100 text-emerald-800 rounded-lg flex-shrink-0">
@@ -917,15 +1697,8 @@ const VendorDashboard = () => {
                       </p>
                     </div>
                   </div>
-
-                  {/* Disintermediation Guard Notice */}
-                  <div className="hidden sm:flex items-center gap-1.5 text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200 flex-shrink-0">
-                    <Shield className="w-3.5 h-3.5 flex-shrink-0" />
-                    <span>Contact masking active</span>
-                  </div>
                 </div>
 
-                {/* Message Stream (Scrollable Y) */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50/40">
                   {chatLoading ? (
                     <div className="flex items-center justify-center h-full">
@@ -935,19 +1708,13 @@ const VendorDashboard = () => {
                     <div className="text-center py-16 text-gray-400 space-y-1">
                       <Clock className="w-8 h-8 mx-auto text-gray-300" />
                       <p className="text-xs font-semibold">No messages in this conversation yet.</p>
-                      <p className="text-[10px]">
-                        Send a message to respond to this customer's inquiry.
-                      </p>
+                      <p className="text-[10px]">Send a message to respond to this customer.</p>
                     </div>
                   ) : (
                     messages.map((msg) => {
                       const isMe = msg.sender_id === user.id;
-
                       return (
-                        <div
-                          key={msg.id}
-                          className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
-                        >
+                        <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
                           <div
                             className={`max-w-[85%] sm:max-w-[75%] rounded-2xl px-3.5 py-2 text-xs shadow-sm break-words ${
                               isMe
@@ -955,9 +1722,7 @@ const VendorDashboard = () => {
                                 : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none'
                             }`}
                           >
-                            <p className="leading-relaxed whitespace-pre-wrap">
-                              {msg.message_text}
-                            </p>
+                            <p className="leading-relaxed whitespace-pre-wrap">{msg.message_text}</p>
                           </div>
                           <span className="text-[9px] text-gray-400 px-1 mt-0.5">
                             {new Date(msg.created_at).toLocaleTimeString([], {
@@ -972,7 +1737,6 @@ const VendorDashboard = () => {
                   <div ref={messagesEndRef} />
                 </div>
 
-                {/* Chat Input Bar */}
                 <form
                   onSubmit={handleSendMessage}
                   className="p-2.5 border-t border-gray-200 bg-white flex items-center gap-2 flex-shrink-0"
@@ -1006,7 +1770,7 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* MODAL: ADD / EDIT PRODUCT[cite: 7] */}
+      {/* MODAL: ADD / EDIT PRODUCT */}
       {showProductModal && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white max-w-2xl w-full rounded-xl shadow-xl border border-gray-200 p-6 space-y-4 my-8">
@@ -1173,10 +1937,10 @@ const VendorDashboard = () => {
                   />
                 </div>
               </div>
-                
+
               <div>
                 <label className="block text-[11px] text-gray-600 font-medium">
-                  Cancellation Fee (₹/item)
+                  Cancellation Compensation Fee (₹/item)
                 </label>
                 <input
                   type="number"
@@ -1187,14 +1951,12 @@ const VendorDashboard = () => {
                   className="w-full text-xs p-2 border border-gray-300 rounded focus:ring-emerald-500"
                   placeholder="e.g. 200"
                 />
-                <span className="text-[10px] text-gray-400">Deducted from customer deposit if cancelled[cite: 7]</span>
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Product Images (Min 1, Max 6 total)[cite: 7]
+                  Product Images (Min 1, Max 6 total)
                 </label>
-
                 <div className="flex flex-wrap gap-2 mb-2">
                   {existingImages.map((url, idx) => (
                     <div key={`exist-${idx}`} className="relative w-16 h-16 rounded border overflow-hidden">
@@ -1285,10 +2047,7 @@ const VendorDashboard = () => {
                 >
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  className="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs font-bold"
-                >
+                <button type="submit" className="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs font-bold">
                   Save Category
                 </button>
               </div>
@@ -1297,10 +2056,169 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* MODAL: RETURN INSPECTION & SETTLEMENT*/}
+      {/* MODAL: CREATE STORE PROMO COUPON */}
+      {showCouponModal && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white max-w-md w-full rounded-2xl shadow-xl border border-gray-200 p-6 space-y-4 my-8">
+            <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-emerald-100 text-emerald-800 rounded-lg">
+                  <Tag className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-gray-900">Create Store Coupon</h3>
+                  <p className="text-[11px] text-gray-500">Self-funded store promotional campaign</p>
+                </div>
+              </div>
+              <button onClick={() => setShowCouponModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateCoupon} className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Coupon Code</label>
+                  <input
+                    type="text"
+                    required
+                    value={couponForm.code}
+                    onChange={(e) => setCouponForm({ ...couponForm, code: e.target.value.toUpperCase() })}
+                    placeholder="SUMMER20"
+                    className="w-full text-xs p-2 border border-gray-300 rounded-lg uppercase font-mono font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Discount Type</label>
+                  <select
+                    value={couponForm.discount_type}
+                    onChange={(e) => setCouponForm({ ...couponForm, discount_type: e.target.value })}
+                    className="w-full text-xs p-2 border border-gray-300 rounded-lg bg-white"
+                  >
+                    <option value="PERCENT">Percentage (% OFF)</option>
+                    <option value="FLAT">Flat Amount (₹ OFF)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">
+                    {couponForm.discount_type === 'PERCENT' ? 'Discount Rate (%)' : 'Discount Amount (₹)'}
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min={1}
+                    required
+                    value={couponForm.discount_value}
+                    onChange={(e) => setCouponForm({ ...couponForm, discount_value: e.target.value })}
+                    placeholder={couponForm.discount_type === 'PERCENT' ? '20' : '500'}
+                    className="w-full text-xs p-2 border border-gray-300 rounded-lg font-bold"
+                  />
+                </div>
+
+                {couponForm.discount_type === 'PERCENT' && (
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">
+                      Max Discount Cap (₹)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min={1}
+                      value={couponForm.max_discount_amount}
+                      onChange={(e) => setCouponForm({ ...couponForm, max_discount_amount: e.target.value })}
+                      placeholder="e.g. 1500"
+                      className="w-full text-xs p-2 border border-gray-300 rounded-lg"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] text-gray-600 font-medium">Min Rental Days</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={couponForm.min_rental_days}
+                    onChange={(e) => setCouponForm({ ...couponForm, min_rental_days: e.target.value })}
+                    className="w-full text-xs p-2 border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-gray-600 font-medium">Min Gross Rent (₹)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min={0}
+                    value={couponForm.min_order_amount}
+                    onChange={(e) => setCouponForm({ ...couponForm, min_order_amount: e.target.value })}
+                    className="w-full text-xs p-2 border border-gray-300 rounded-lg"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] text-gray-600 font-medium">Max Total Redemptions</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={couponForm.max_uses}
+                    onChange={(e) => setCouponForm({ ...couponForm, max_uses: e.target.value })}
+                    placeholder="Unlimited"
+                    className="w-full text-xs p-2 border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-gray-600 font-medium">Per-Customer Limit</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={couponForm.per_user_limit}
+                    onChange={(e) => setCouponForm({ ...couponForm, per_user_limit: e.target.value })}
+                    className="w-full text-xs p-2 border border-gray-300 rounded-lg"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-gray-600 font-medium">Expiration Date (Optional)</label>
+                <input
+                  type="date"
+                  value={couponForm.valid_until}
+                  onChange={(e) => setCouponForm({ ...couponForm, valid_until: e.target.value })}
+                  className="w-full text-xs p-2 border border-gray-300 rounded-lg"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setShowCouponModal(false)}
+                  className="px-4 py-2 border rounded-lg text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingCoupon}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-50"
+                >
+                  {savingCoupon ? 'Creating...' : 'Create Promo Code'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: RETURN INSPECTION & DIRECT DEPOSIT SETTLEMENT */}
       {inspectingOrder && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white max-w-md w-full rounded-xl shadow-xl border border-gray-200 p-6 space-y-4">
+          <div className="bg-white max-w-md w-full rounded-2xl shadow-xl border border-gray-200 p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-gray-100 pb-3">
               <h3 className="text-base font-bold text-gray-900">
                 Inspect Return: Order #{inspectingOrder.id}
@@ -1311,32 +2229,87 @@ const VendorDashboard = () => {
             </div>
 
             <form onSubmit={handleProcessReturn} className="space-y-4">
-              <div className="text-xs text-gray-600 space-y-1 bg-gray-50 p-3 rounded-lg">
+              <div className="text-xs text-gray-600 space-y-1 bg-gray-50 p-3 rounded-lg border border-gray-100">
                 <p><b>Product:</b> {inspectingOrder.product_title}</p>
                 <p><b>Customer:</b> {inspectingOrder.customer_name} ({inspectingOrder.customer_phone})</p>
                 <p><b>Scheduled End Date:</b> {inspectingOrder.end_date.split('T')[0]}</p>
                 {inspectingOrder.assigned_serial_number && (
                   <p className="text-indigo-700 font-bold">
-                    <b>Assigned Asset Tag / S/N:</b> {inspectingOrder.assigned_serial_number}
+                    <b>Assigned S/N:</b> {inspectingOrder.assigned_serial_number}
                   </p>
                 )}
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-gray-700 mb-1">
-                  Product Returned Condition:
+                  Equipment Return Condition:
                 </label>
                 <select
                   value={productCondition}
                   onChange={(e) => setProductCondition(e.target.value)}
                   className="w-full text-xs p-2.5 border border-gray-300 rounded-lg bg-white font-semibold"
                 >
-                  <option value="Good">Good (Full escrow deposit returned to customer)</option>
-                  <option value="Damaged">Damaged (Escrow deposit forfeited to you for repairs)</option>
+                  <option value="Good">Good (Refund refundable security deposit to customer)</option>
+                  <option value="Damaged">Damaged (Forfeit deposit to your store to cover repairs)</option>
                 </select>
               </div>
 
-              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+              {productCondition === 'Good' && (
+                <div className="space-y-2 pt-2 border-t border-gray-100">
+                  <label className="block text-xs font-bold text-gray-700">Refund Settlement Method:</label>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <label className={`p-2.5 border rounded-lg cursor-pointer flex items-center gap-1.5 font-medium ${
+                      refundMethod === 'razorpay_api'
+                        ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
+                        : 'border-gray-200 text-gray-600'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="refundMethod"
+                        value="razorpay_api"
+                        checked={refundMethod === 'razorpay_api'}
+                        onChange={() => setRefundMethod('razorpay_api')}
+                        className="text-emerald-600"
+                      />
+                      <span>Razorpay API Refund</span>
+                    </label>
+
+                    <label className={`p-2.5 border rounded-lg cursor-pointer flex items-center gap-1.5 font-medium ${
+                      refundMethod === 'offline'
+                        ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
+                        : 'border-gray-200 text-gray-600'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="refundMethod"
+                        value="offline"
+                        checked={refundMethod === 'offline'}
+                        onChange={() => setRefundMethod('offline')}
+                        className="text-emerald-600"
+                      />
+                      <span>Cash / Direct UPI</span>
+                    </label>
+                  </div>
+
+                  {refundMethod === 'offline' && (
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Bank UTR / Cash Receipt Reference:
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={offlineReference}
+                        onChange={(e) => setOfflineReference(e.target.value)}
+                        placeholder="e.g. UPI-UTR-428190219"
+                        className="w-full text-xs p-2 border border-gray-300 rounded-lg"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
                 <button
                   type="button"
                   onClick={() => setInspectingOrder(null)}
@@ -1349,7 +2322,7 @@ const VendorDashboard = () => {
                   disabled={orderActionLoading}
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-bold disabled:opacity-50"
                 >
-                  {orderActionLoading ? 'Processing Settlement...' : 'Confirm Return & Settle'}
+                  {orderActionLoading ? 'Settling Return...' : 'Confirm Return & Settle'}
                 </button>
               </div>
             </form>
@@ -1388,7 +2361,6 @@ const VendorDashboard = () => {
                 <p><b>Customer:</b> {handoverModalOrder.customer_name}</p>
               </div>
 
-              {/* 6-Digit PIN (Mandatory) */}
               <div>
                 <label className="block text-xs font-bold text-gray-700 mb-1">
                   Customer 6-Digit PIN:
@@ -1405,7 +2377,6 @@ const VendorDashboard = () => {
                 />
               </div>
 
-              {/* Asset Serial / Tag Input (Optional) */}
               <div>
                 <label className="block text-xs font-bold text-gray-700 mb-1">
                   Equipment Serial / Asset Tag: <span className="text-[10px] font-normal text-gray-400">(Optional)</span>
@@ -1418,7 +2389,7 @@ const VendorDashboard = () => {
                   className="w-full text-xs p-2.5 border border-gray-300 rounded-xl uppercase font-mono focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                 />
                 <span className="text-[10px] text-gray-400 block mt-0.5">
-                  Optional for serialized gear (cameras, electronics). Leave blank for clothes or bulk items.
+                  Optional for serialized gear (cameras, electronics). Leave blank for non-serialized items.
                 </span>
               </div>
 

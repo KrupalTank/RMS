@@ -1,13 +1,15 @@
 // services/pricingService.js
 
 /**
- * Calculates rental days, tiered rate, deposit, loyalty discount, and vendor/platform splits
+ * Calculates rental days, tiered rate, deposit, vendor discounts, and customer checkout totals.
+ * In this vendor-direct SaaS model, platform commission per order is 0%.
+ *
  * @param {Object} product - Product DB record
  * @param {string|Date} startDate - Format YYYY-MM-DD
  * @param {string|Date} endDate - Format YYYY-MM-DD
  * @param {number} quantity - Quantity of units
  * @param {string} kycStatus - 'verified' | 'non_verified' | 'pending' | 'rejected'
- * @param {number} couponDiscountPercent - 0 if no coupon applied to this item, e.g. 10.00
+ * @param {Object|number} couponInput - Vendor coupon object or legacy numeric discount percent
  */
 function calculateRentalQuotation(
   product,
@@ -15,7 +17,7 @@ function calculateRentalQuotation(
   endDate,
   quantity = 1,
   kycStatus = 'non_verified',
-  couponDiscountPercent = 0
+  couponInput = null
 ) {
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -44,29 +46,52 @@ function calculateRentalQuotation(
     ? parseFloat(product.late_fee_verified)
     : parseFloat(product.late_fee_non_verified);
 
-  const grossRent = applicableDailyRent * totalDays * quantity;
-  const totalDeposit = depositPerItem * quantity;
+  const grossRent = parseFloat((applicableDailyRent * totalDays * quantity).toFixed(2));
+  const totalDeposit = parseFloat((depositPerItem * quantity).toFixed(2));
 
-  // Read platform commission rate (Default: 10%)
-  const commissionRate = parseFloat(process.env.PLATFORM_COMMISSION_PERCENT || 10) / 100;
-
-  // Vendor Net Rent is always: Gross Rent * (1 - Commission Rate) -> e.g., 90%
-  const vendorNetRent = parseFloat((grossRent * (1 - commissionRate)).toFixed(2));
-
-  // Compute Discount (if coupon applied to this specific product)
+  // Handle Vendor-Managed Coupons
   let discountAmount = 0;
-  let platformCommission = parseFloat((grossRent * commissionRate).toFixed(2));
+  let couponApplied = false;
 
-  if (couponDiscountPercent > 0) {
-    discountAmount = parseFloat(((grossRent * couponDiscountPercent) / 100).toFixed(2));
-    platformCommission = Math.max(0, parseFloat((platformCommission - discountAmount).toFixed(2)));
+  if (couponInput) {
+    if (typeof couponInput === 'object') {
+      const minDays = parseInt(couponInput.min_rental_days || 1, 10);
+      const minOrderAmt = parseFloat(couponInput.min_order_amount || 0);
+
+      // Check duration and gross amount criteria
+      if (totalDays >= minDays && grossRent >= minOrderAmt) {
+        if (couponInput.discount_type === 'FLAT') {
+          discountAmount = Math.min(parseFloat(couponInput.discount_value), grossRent);
+          couponApplied = true;
+        } else {
+          // PERCENT type
+          const pct = parseFloat(couponInput.discount_value || 0);
+          let rawDiscount = (grossRent * pct) / 100;
+          if (couponInput.max_discount_amount) {
+            rawDiscount = Math.min(rawDiscount, parseFloat(couponInput.max_discount_amount));
+          }
+          discountAmount = Math.min(rawDiscount, grossRent);
+          couponApplied = true;
+        }
+      }
+    } else if (typeof couponInput === 'number' && couponInput > 0) {
+      // Legacy fallback
+      discountAmount = Math.min((grossRent * couponInput) / 100, grossRent);
+      couponApplied = true;
+    }
   }
 
-  // Customer Paid Rent = Gross Rent - Discount
+  discountAmount = parseFloat(discountAmount.toFixed(2));
+
+  // Customer Paid Rent (Net rent received by vendor - base for 5% annual royalty)
   const customerPaidRent = parseFloat((grossRent - discountAmount).toFixed(2));
 
-  // Customer Checkout Subtotal for this Item
-  const grandTotal = customerPaidRent + totalDeposit;
+  // Zero-intermediation: Vendor gets 100% of the rent paid by customer
+  const vendorNetRent = customerPaidRent;
+  const platformCommission = 0.0;
+
+  // Checkout grand total (Customer pays Net Rent + Security Deposit directly to Vendor)
+  const grandTotal = parseFloat((customerPaidRent + totalDeposit).toFixed(2));
 
   const maxLateDays = 3;
 
@@ -77,8 +102,9 @@ function calculateRentalQuotation(
     lateFeePerDay,
     grossRent,
     discountAmount,
+    couponApplied,
     customerPaidRent,
-    totalRent: customerPaidRent, // <-- Restores compatibility with Cart & Checkout
+    totalRent: customerPaidRent, // Backward compatibility with frontend
     platformCommission,
     vendorNetRent,
     totalDeposit,

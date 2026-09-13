@@ -14,6 +14,7 @@ import {
   ShoppingBag,
   RefreshCw,
   Tag,
+  Store,
 } from 'lucide-react';
 
 const Checkout = () => {
@@ -24,8 +25,8 @@ const Checkout = () => {
   // Receives { [productId]: couponId }
   const appliedCoupons = location.state?.applied_coupons || {};
 
-  const [cartData, setCartData] = useState({ items: [], summary: {} });
-  const [coupons, setCoupons] = useState([]);
+  const [cartData, setCartData] = useState({ items: [], summary: {}, storeVendor: null });
+  const [storeCoupons, setStoreCoupons] = useState([]);
   const [loading, setLoading] = useState(true);
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [error, setError] = useState('');
@@ -34,19 +35,24 @@ const Checkout = () => {
   useEffect(() => {
     const fetchCheckoutData = async () => {
       try {
-        const [cartRes, couponsRes] = await Promise.all([
-          api.get('/user/getCart'),
-          api.get('/user/myCoupons'),
-        ]);
+        const cartRes = await api.get('/user/getCart');
 
         if (cartRes.data.success) {
+          const items = cartRes.data.items || [];
+          const vendor = cartRes.data.storeVendor || null;
+
           setCartData({
-            items: cartRes.data.items || [],
+            items,
             summary: cartRes.data.summary || {},
+            storeVendor: vendor,
           });
-        }
-        if (couponsRes.data.success) {
-          setCoupons(couponsRes.data.coupons || []);
+
+          if (vendor?.id) {
+            const couponRes = await api.get(`/user/storeCoupons/${vendor.id}`);
+            if (couponRes.data.success) {
+              setStoreCoupons(couponRes.data.coupons || []);
+            }
+          }
         }
       } catch (err) {
         setError(err.response?.data?.message || 'Failed to initialize checkout.');
@@ -67,12 +73,12 @@ const Checkout = () => {
         throw new Error('Razorpay SDK failed to load. Please check your internet connection.');
       }
 
-      // Convert appliedCoupons object to payload array: [{ product_id, coupon_id }]
       const couponAssignments = Object.entries(appliedCoupons).map(([prodId, coupId]) => ({
         product_id: parseInt(prodId, 10),
         coupon_id: coupId,
       }));
 
+      // Initialize order on Vendor's Razorpay Account
       const checkoutRes = await api.post('/payment/createCheckoutOrder', {
         coupon_assignments: couponAssignments,
       });
@@ -81,19 +87,21 @@ const Checkout = () => {
         throw new Error(checkoutRes.data.message || 'Failed to initialize checkout.');
       }
 
-      const { key_id, razorpay_order_id, amount, currency, group_id } = checkoutRes.data;
+      const { key_id, vendor_name, razorpay_order_id, amount, currency, group_id } =
+        checkoutRes.data;
 
+      // Configure Razorpay Checkout Modal using the vendor's key
       const options = {
-        key: key_id || import.meta.env.VITE_RAZORPAY_KEY_ID,
+        key: key_id,
         amount: amount,
         currency: currency || 'INR',
-        name: 'RMS Rental Platform',
-        description: `Rental Booking Group #${group_id}`,
+        name: vendor_name || 'Rental Store',
+        description: `Rental Order #${group_id}`,
         order_id: razorpay_order_id,
         prefill: {
           name: user?.full_name || '',
           email: user?.email || '',
-          contact: user?.phone || '9999999999',
+          contact: user?.phone || '',
         },
         theme: { color: '#2563EB' },
         handler: async function (response) {
@@ -136,8 +144,10 @@ const Checkout = () => {
       razorpayInstance.open();
     } catch (err) {
       console.error('Checkout error:', err);
-      setError(err.response?.data?.message || err.message || 'Payment initiation failed.');
+      const errMsg = err.response?.data?.message || err.message || 'Payment initiation failed.';
+      setError(errMsg);      
       setPaymentLoading(false);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
 
@@ -149,9 +159,8 @@ const Checkout = () => {
     );
   }
 
-  const { items } = cartData;
+  const { items, storeVendor } = cartData;
 
-  // Compute live breakdown with multi-coupons
   let grossRentTotal = 0;
   let discountTotal = 0;
   let depositTotal = 0;
@@ -164,7 +173,19 @@ const Checkout = () => {
 
     const assignedCouponId = appliedCoupons[item.product_id];
     if (assignedCouponId) {
-      discountTotal += itemRent * 0.1;
+      const activeCoupon = storeCoupons.find((c) => c.id === assignedCouponId);
+      if (activeCoupon) {
+        let discount = 0;
+        if (activeCoupon.discount_type === 'FLAT') {
+          discount = Math.min(parseFloat(activeCoupon.discount_value), itemRent);
+        } else {
+          const raw = (itemRent * parseFloat(activeCoupon.discount_value)) / 100;
+          discount = activeCoupon.max_discount_amount
+            ? Math.min(raw, parseFloat(activeCoupon.max_discount_amount))
+            : raw;
+        }
+        discountTotal += Math.min(discount, itemRent);
+      }
     }
   });
 
@@ -198,9 +219,14 @@ const Checkout = () => {
       <div className="border-b border-gray-200 pb-4">
         <h1 className="text-2xl font-extrabold text-gray-900 flex items-center gap-2">
           <CreditCard className="w-6 h-6 text-blue-600" />
-          <span>Checkout & Secure Payment</span>
+          <span>Checkout & Direct Store Payment</span>
         </h1>
-        <p className="text-xs text-gray-500 mt-1">Review rental configuration and complete payment via Razorpay.</p>
+        {storeVendor && (
+          <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+            <Store className="w-3.5 h-3.5 text-blue-600" />
+            Paying directly to <b>{storeVendor.name}</b>'s verified gateway
+          </p>
+        )}
       </div>
 
       {paymentSuccess && (
@@ -208,15 +234,28 @@ const Checkout = () => {
           <CheckCircle2 className="w-6 h-6 flex-shrink-0" />
           <div>
             <h4 className="font-bold text-sm">Payment Verified Successfully!</h4>
-            <p className="text-xs">Your booking is locked. Redirecting to your orders...</p>
+            <p className="text-xs">Your booking is locked with your Handshake PIN. Redirecting...</p>
           </div>
         </div>
       )}
 
       {error && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-xl flex items-center gap-2 text-xs text-red-700">
-          <AlertCircle className="w-5 h-5 flex-shrink-0" />
-          <span>{error}</span>
+        <div className="p-4 bg-red-50 border border-red-200 rounded-xl flex items-start justify-between gap-3 text-xs text-red-800">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="w-5 h-5 flex-shrink-0 text-red-600 mt-0.5" />
+            <div>
+              <p className="font-bold text-sm text-red-900">Checkout Unsuccessful</p>
+              <p className="mt-0.5">{error}</p>
+            </div>
+          </div>
+          {error.includes('paused') && (
+            <Link
+              to="/customer/cart"
+              className="px-3 py-1.5 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition whitespace-nowrap"
+            >
+              Back to Cart
+            </Link>
+          )}
         </div>
       )}
 
@@ -233,9 +272,21 @@ const Checkout = () => {
             const primaryImg = images[0] || 'https://placehold.co/400x300?text=No+Image';
 
             const assignedCouponId = appliedCoupons[item.product_id];
-            const activeCoupon = coupons.find((c) => c.id === assignedCouponId);
+            const activeCoupon = storeCoupons.find((c) => c.id === assignedCouponId);
             const itemGrossRent = parseFloat(item.quotation?.grossRent || item.quotation?.totalRent || 0);
-            const itemDiscount = assignedCouponId ? itemGrossRent * 0.1 : 0;
+
+            let itemDiscount = 0;
+            if (activeCoupon) {
+              if (activeCoupon.discount_type === 'FLAT') {
+                itemDiscount = Math.min(parseFloat(activeCoupon.discount_value), itemGrossRent);
+              } else {
+                const raw = (itemGrossRent * parseFloat(activeCoupon.discount_value)) / 100;
+                itemDiscount = activeCoupon.max_discount_amount
+                  ? Math.min(raw, parseFloat(activeCoupon.max_discount_amount))
+                  : raw;
+              }
+              itemDiscount = Math.min(itemDiscount, itemGrossRent);
+            }
 
             return (
               <div
@@ -255,10 +306,12 @@ const Checkout = () => {
                     <p className="text-[11px] text-gray-500">
                       Duration: {item.start_date.split('T')[0]} to {item.end_date.split('T')[0]}
                     </p>
-                    <p className="text-[11px] text-gray-500">Quantity: <b>{item.quantity} unit(s)</b></p>
+                    <p className="text-[11px] text-gray-500">
+                      Quantity: <b>{item.quantity} unit(s)</b>
+                    </p>
                     {assignedCouponId && (
                       <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                        <Tag className="w-3 h-3" /> {activeCoupon?.code || '10% Voucher'} Applied
+                        <Tag className="w-3 h-3" /> {activeCoupon?.code} Applied
                       </span>
                     )}
                   </div>
@@ -267,8 +320,12 @@ const Checkout = () => {
                 <div className="text-right text-xs">
                   {assignedCouponId ? (
                     <>
-                      <span className="block text-[11px] text-gray-400 line-through">₹{itemGrossRent.toFixed(2)}</span>
-                      <span className="block font-bold text-emerald-600">Rent: ₹{(itemGrossRent - itemDiscount).toFixed(2)}</span>
+                      <span className="block text-[11px] text-gray-400 line-through">
+                        ₹{itemGrossRent.toFixed(2)}
+                      </span>
+                      <span className="block font-bold text-emerald-600">
+                        Rent: ₹{(itemGrossRent - itemDiscount).toFixed(2)}
+                      </span>
                     </>
                   ) : (
                     <span className="block font-bold text-gray-900">Rent: ₹{itemGrossRent.toFixed(2)}</span>
@@ -282,7 +339,7 @@ const Checkout = () => {
           })}
         </div>
 
-        {/* Right Column: Escrow Breakdown */}
+        {/* Right Column: Checkout Breakdown */}
         <div className="lg:col-span-5 space-y-6">
           <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm space-y-4">
             <h3 className="text-sm font-extrabold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-3">
@@ -298,7 +355,7 @@ const Checkout = () => {
               {discountTotal > 0 && (
                 <div className="flex justify-between text-emerald-600 font-semibold">
                   <span className="flex items-center gap-1">
-                    <Tag className="w-3.5 h-3.5" /> Total Loyalty Vouchers Savings:
+                    <Tag className="w-3.5 h-3.5" /> Store Promotions Discount:
                   </span>
                   <span>-₹{discountTotal.toFixed(2)}</span>
                 </div>
@@ -311,23 +368,23 @@ const Checkout = () => {
                   ) : (
                     <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
                   )}
-                  Refundable Security Escrow:
+                  Refundable Security Deposit:
                 </span>
                 <span className="font-bold text-gray-900">₹{depositTotal.toFixed(2)}</span>
               </div>
 
               <div className="pt-3 border-t border-gray-200 flex justify-between items-center text-sm">
-                <span className="font-extrabold text-gray-900">Total Payable Amount:</span>
+                <span className="font-extrabold text-gray-900">Total Payable:</span>
                 <span className="text-xl font-black text-blue-600">
                   ₹{payableTotal.toFixed(2)}
                 </span>
               </div>
             </div>
 
-            <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 text-[11px] text-blue-800 space-y-1">
-              <p className="font-semibold">🔒 Escrow Protection Policy:</p>
+            <div className="bg-emerald-50 p-3 rounded-lg border border-emerald-100 text-[11px] text-emerald-800 space-y-1">
+              <p className="font-semibold">Direct Store Settlement Guarantee:</p>
               <p>
-                Security deposits are held in platform escrow and refunded automatically upon return verification.
+                100% of your payment is received by the vendor. Upon return inspection, your deposit is refunded automatically back to your payment account.
               </p>
             </div>
 
@@ -337,7 +394,9 @@ const Checkout = () => {
               className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold shadow-md transition disabled:opacity-50"
             >
               <CreditCard className="w-4 h-4" />
-              <span>{paymentLoading ? 'Processing Checkout...' : `Pay ₹${payableTotal.toFixed(2)} via Razorpay`}</span>
+              <span>
+                {paymentLoading ? 'Connecting to Gateway...' : `Pay ₹${payableTotal.toFixed(2)} via Razorpay`}
+              </span>
             </button>
           </div>
         </div>

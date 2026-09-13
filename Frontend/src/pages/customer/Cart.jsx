@@ -13,25 +13,19 @@ import {
   ShoppingBag,
   RefreshCw,
   AlertCircle,
-  Award,
   Tag,
   CheckCircle2,
   Plus,
   Sparkles,
+  Store,
 } from 'lucide-react';
 
 const Cart = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  const [cartData, setCartData] = useState({ items: [], summary: {} });
-  const [couponsData, setCouponsData] = useState({
-    coupons: [],
-    consecutive_good_returns: 0,
-    late_returns_count: 0,
-    milestone_target: 8,
-    contact_support_email: 'support@rms.com',
-  });
+  const [cartData, setCartData] = useState({ items: [], summary: {}, storeVendor: null });
+  const [storeCoupons, setStoreCoupons] = useState([]);
 
   // Frequently Rented Together recommendations
   const [frequentlyRented, setFrequentlyRented] = useState([]);
@@ -44,33 +38,41 @@ const Cart = () => {
   const [updatingId, setUpdatingId] = useState(null);
   const [error, setError] = useState('');
 
+  // Vendor Conflict State (Modal prompt if adding gear from a second vendor)
+  const [conflictModal, setConflictModal] = useState(null);
+
   const fetchCartAndCoupons = async () => {
     try {
-      const [cartRes, couponsRes] = await Promise.all([
-        api.get('/user/getCart'),
-        api.get('/user/myCoupons'),
-      ]);
+      const cartRes = await api.get('/user/getCart');
 
       let currentItems = [];
+      let vendor = null;
+
       if (cartRes.data.success) {
         currentItems = cartRes.data.items || [];
+        vendor = cartRes.data.storeVendor || null;
         setCartData({
           items: currentItems,
           summary: cartRes.data.summary || {},
+          storeVendor: vendor,
         });
       }
 
-      if (couponsRes.data.success) {
-        setCouponsData({
-          coupons: couponsRes.data.coupons || [],
-          consecutive_good_returns: couponsRes.data.consecutive_good_returns || 0,
-          late_returns_count: couponsRes.data.late_returns_count || 0,
-          milestone_target: couponsRes.data.milestone_target || 8,
-          contact_support_email: couponsRes.data.contact_support_email || 'support@rms.com',
-        });
+      // Fetch active promo coupons for this specific store
+      if (vendor?.id) {
+        try {
+          const couponRes = await api.get(`/user/storeCoupons/${vendor.id}`);
+          if (couponRes.data.success) {
+            setStoreCoupons(couponRes.data.coupons || []);
+          }
+        } catch (cErr) {
+          console.error('Failed to load store coupons:', cErr);
+        }
+      } else {
+        setStoreCoupons([]);
       }
 
-      // Fetch Frequently Rented Together recommendations based on cart items
+      // Fetch recommendations based on cart items
       if (currentItems.length > 0) {
         const productIds = currentItems.map((item) => item.product_id);
         const recRes = await api.post('/user/recommendations/frequentlyRentedTogether', {
@@ -79,7 +81,6 @@ const Cart = () => {
         });
 
         if (recRes.data.success) {
-          // Exclude any item that's already in the cart
           const filtered = (recRes.data.products || []).filter(
             (rec) => !productIds.includes(rec.id)
           );
@@ -119,7 +120,20 @@ const Cart = () => {
 
       await fetchCartAndCoupons();
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to update cart configuration.');
+      if (err.response?.status === 409 && err.response?.data?.conflict) {
+        setConflictModal({
+          currentVendor: err.response.data.currentVendorName,
+          newVendor: err.response.data.newVendorName,
+          pendingItem: {
+            product_id: productId,
+            quantity: newQuantity,
+            start_date: newStartDate,
+            end_date: newEndDate,
+          },
+        });
+      } else {
+        setError(err.response?.data?.message || 'Failed to update cart configuration.');
+      }
     } finally {
       setUpdatingId(null);
     }
@@ -139,6 +153,20 @@ const Cart = () => {
     }
   };
 
+  const handleClearAndSwitchVendor = async () => {
+    if (!conflictModal?.pendingItem) return;
+    try {
+      await api.delete('/user/clearCart');
+      setAppliedCoupons({});
+      await api.post('/user/addToCart', conflictModal.pendingItem);
+      setConflictModal(null);
+      await fetchCartAndCoupons();
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to switch stores.');
+      setConflictModal(null);
+    }
+  };
+
   const handleToggleCoupon = (productId, couponId) => {
     setAppliedCoupons((prev) => {
       const next = { ...prev };
@@ -151,11 +179,9 @@ const Cart = () => {
     });
   };
 
-  // 1-Click Quick Add recommended accessory/item using matching dates from primary cart item
   const handleQuickAddRecommendation = async (recProduct) => {
     if (!cartData.items || cartData.items.length === 0) return;
 
-    // Inherit the start and end date from the first item in the cart
     const baseItem = cartData.items[0];
     setAddingRecId(recProduct.id);
     setError('');
@@ -170,7 +196,20 @@ const Cart = () => {
 
       await fetchCartAndCoupons();
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to add recommended item to cart.');
+      if (err.response?.status === 409 && err.response?.data?.conflict) {
+        setConflictModal({
+          currentVendor: err.response.data.currentVendorName,
+          newVendor: err.response.data.newVendorName,
+          pendingItem: {
+            product_id: recProduct.id,
+            quantity: 1,
+            start_date: baseItem.start_date,
+            end_date: baseItem.end_date,
+          },
+        });
+      } else {
+        setError(err.response?.data?.message || 'Failed to add recommended item to cart.');
+      }
     } finally {
       setAddingRecId(null);
     }
@@ -184,10 +223,10 @@ const Cart = () => {
     );
   }
 
-  const { items } = cartData;
-  const { coupons, consecutive_good_returns, milestone_target, late_returns_count } = couponsData;
+  const { items, storeVendor } = cartData;
   const todayStr = formatLocalDate(new Date());
 
+  // Dynamic live pricing & coupon calculation
   let calculatedGrossRent = 0;
   let calculatedDiscount = 0;
   let calculatedDeposit = 0;
@@ -200,98 +239,79 @@ const Cart = () => {
 
     const assignedCouponId = appliedCoupons[item.product_id];
     if (assignedCouponId) {
-      const activeCoupon = coupons.find((c) => c.id === assignedCouponId);
-      const discountRate = parseFloat(activeCoupon?.discount_percent || 10) / 100;
-      calculatedDiscount += itemRent * discountRate;
+      const activeCoupon = storeCoupons.find((c) => c.id === assignedCouponId);
+      if (activeCoupon) {
+        let discount = 0;
+        if (activeCoupon.discount_type === 'FLAT') {
+          discount = Math.min(parseFloat(activeCoupon.discount_value), itemRent);
+        } else {
+          const raw = (itemRent * parseFloat(activeCoupon.discount_value)) / 100;
+          discount = activeCoupon.max_discount_amount
+            ? Math.min(raw, parseFloat(activeCoupon.max_discount_amount))
+            : raw;
+        }
+        calculatedDiscount += Math.min(discount, itemRent);
+      }
     }
   });
 
   const calculatedGrandTotal = calculatedGrossRent - calculatedDiscount + calculatedDeposit;
-  const progressPercent = Math.min(100, Math.round((consecutive_good_returns / milestone_target) * 100));
+  const isCheckoutBlocked = Boolean(
+    storeVendor && (!storeVendor.hasGatewayConfigured || storeVendor.isRenewalDue)
+  );
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-200 pb-4">
-        <h1 className="text-2xl font-extrabold text-gray-900 flex items-center gap-2">
-          <ShoppingBag className="w-6 h-6 text-blue-600" />
-          <span>Your Rental Cart</span>
-        </h1>
+        <div>
+          <h1 className="text-2xl font-extrabold text-gray-900 flex items-center gap-2">
+            <ShoppingBag className="w-6 h-6 text-blue-600" />
+            <span>Your Rental Cart</span>
+          </h1>
+          {storeVendor && (
+            <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+              <Store className="w-3.5 h-3.5 text-blue-600" />
+              Ordering directly from <b>{storeVendor.name}</b> ({storeVendor.city})
+            </p>
+          )}
+        </div>
         <span className="text-xs font-semibold px-3 py-1 bg-gray-100 rounded-full text-gray-600">
           {items.length} Item{items.length !== 1 ? 's' : ''}
         </span>
       </div>
 
-      {/* Loyalty Milestone Banner */}
-      <div className="bg-gradient-to-r from-blue-900 via-indigo-900 to-blue-800 text-white rounded-xl p-5 shadow-sm space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5">
-            <Award className="w-6 h-6 text-amber-400 flex-shrink-0" />
-            <div>
-              <h3 className="font-bold text-sm">Loyalty Rental Privilege Program</h3>
-              <p className="text-xs text-blue-200">
-                Complete {milestone_target} on-time, undamaged returns to earn an exclusive 10% Discount Card.
-              </p>
+      {/* Single-Vendor Cart Conflict Modal */}
+      {conflictModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4">
+            <div className="flex items-center gap-3 text-amber-600">
+              <AlertCircle className="w-6 h-6 flex-shrink-0" />
+              <h3 className="font-bold text-base text-gray-900">Single Store Checkout Policy</h3>
             </div>
-          </div>
-          <div className="text-right">
-            <span
-              className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${
-                late_returns_count > 0
-                  ? 'bg-amber-500/20 text-amber-300 border-amber-400/40'
-                  : 'bg-white/10 text-white border-white/20'
-              }`}
-            >
-              {consecutive_good_returns} / {milestone_target} Completed
-              {late_returns_count > 0 && ' (Paused)'}
-            </span>
+            <p className="text-xs text-gray-600 leading-relaxed">
+              Your cart currently contains gear from <b>{conflictModal.currentVendor}</b>. Payments are made directly to the store owner's account, so orders cannot combine items from multiple shops.
+            </p>
+            <p className="text-xs font-semibold text-gray-700">
+              Would you like to clear your cart and start a new rental with <b>{conflictModal.newVendor}</b>?
+            </p>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => setConflictModal(null)}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-xs font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                Keep Current Cart
+              </button>
+              <button
+                onClick={handleClearAndSwitchVendor}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition shadow-sm"
+              >
+                Clear & Switch Store
+              </button>
+            </div>
           </div>
         </div>
-
-        {/* Branch: If user has active late returns (> 0), show the Amnesty / Paused Notice */}
-        {late_returns_count > 0 ? (
-          <div className="bg-amber-950/50 border border-amber-400/40 rounded-lg p-3.5 space-y-1.5 text-xs">
-            <div className="flex items-center gap-1.5 font-bold text-amber-300">
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              <span>Loyalty Streak Accrual Paused</span>
-            </div>
-            <p className="text-blue-100 text-[11px] leading-relaxed">
-              Your streak is paused at <b>{consecutive_good_returns} / {milestone_target} returns</b> due to{' '}
-              <b>{late_returns_count} overdue return record(s)</b>. New milestone progress will resume once reviewed by administration.
-            </p>
-            <p className="text-blue-100 text-[11px] leading-relaxed">
-              You can still apply your previously earned coupon vouchers to the cart below. To request a 1-time loyalty amnesty review, reach out to RMS Support at:{' '}
-              <a
-                href={`mailto:${couponsData.contact_support_email}`}
-                className="text-amber-300 font-bold underline hover:text-amber-200"
-              >
-                {couponsData.contact_support_email}
-              </a>
-            </p>
-          </div>
-        ) : (
-          /* Regular Progress Bar */
-          <div className="w-full bg-blue-950/60 rounded-full h-2.5 overflow-hidden border border-white/10">
-            <div
-              className="bg-gradient-to-r from-amber-400 to-emerald-400 h-2.5 rounded-full transition-all duration-500"
-              style={{ width: `${progressPercent}%` }}
-            />
-          </div>
-        )}
-
-        {/* Active Available Coupons Pool (Always Usable) */}
-        {coupons.length > 0 && (
-          <div className="pt-2 border-t border-white/10 flex items-center justify-between text-xs">
-            <span className="flex items-center gap-1.5 text-amber-300 font-medium">
-              <Tag className="w-3.5 h-3.5" />
-              You have <b>{coupons.length} available 10% Loyalty Coupon{coupons.length > 1 ? 's' : ''}</b>!
-            </span>
-            <span className="text-[11px] text-blue-200">
-              Apply up to 1 coupon per item to maximize savings.
-            </span>
-          </div>
-        )}
-      </div>
+      )}
 
       {error && (
         <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-xs text-red-700">
@@ -325,7 +345,20 @@ const Cart = () => {
 
                 const itemGrossRent = parseFloat(item.quotation?.grossRent || item.quotation?.totalRent || 0);
                 const assignedCouponId = appliedCoupons[item.product_id];
-                const itemDiscount = assignedCouponId ? itemGrossRent * 0.1 : 0;
+                const activeCoupon = storeCoupons.find((c) => c.id === assignedCouponId);
+
+                let itemDiscount = 0;
+                if (activeCoupon) {
+                  if (activeCoupon.discount_type === 'FLAT') {
+                    itemDiscount = Math.min(parseFloat(activeCoupon.discount_value), itemGrossRent);
+                  } else {
+                    const raw = (itemGrossRent * parseFloat(activeCoupon.discount_value)) / 100;
+                    itemDiscount = activeCoupon.max_discount_amount
+                      ? Math.min(raw, parseFloat(activeCoupon.max_discount_amount))
+                      : raw;
+                  }
+                  itemDiscount = Math.min(itemDiscount, itemGrossRent);
+                }
 
                 return (
                   <div
@@ -345,8 +378,8 @@ const Cart = () => {
                         />
                         <div>
                           <h3 className="text-sm font-bold text-gray-900 line-clamp-1">{item.title}</h3>
-                          <p className="text-[11px] text-gray-500 mt-0.5">Vendor: {item.vendor.name}</p>
-                          <p className="text-[11px] text-gray-500">📍 {item.vendor.city}</p>
+                          <p className="text-[11px] text-gray-500 mt-0.5">Shop: {storeVendor?.name}</p>
+                          <p className="text-[11px] text-gray-500">📍 {storeVendor?.city}</p>
                         </div>
                       </div>
 
@@ -356,7 +389,6 @@ const Cart = () => {
                           <label className="block text-[11px] text-gray-500 font-medium">Start Date</label>
                           <input
                             type="date"
-                            min={todayStr}
                             value={formattedStart}
                             onChange={(e) =>
                               handleUpdateItem(item.product_id, item.quantity, e.target.value, formattedEnd)
@@ -368,7 +400,6 @@ const Cart = () => {
                           <label className="block text-[11px] text-gray-500 font-medium">End Date</label>
                           <input
                             type="date"
-                            min={formattedStart || todayStr}
                             value={formattedEnd}
                             onChange={(e) =>
                               handleUpdateItem(item.product_id, item.quantity, formattedStart, e.target.value)
@@ -383,12 +414,7 @@ const Cart = () => {
                             min={1}
                             value={item.quantity}
                             onChange={(e) =>
-                              handleUpdateItem(
-                                item.product_id,
-                                e.target.value,
-                                formattedStart,
-                                formattedEnd
-                              )
+                              handleUpdateItem(item.product_id, e.target.value, formattedStart, formattedEnd)
                             }
                             className="w-full text-[11px] p-1.5 border border-gray-300 rounded text-center font-bold"
                           />
@@ -404,7 +430,7 @@ const Cart = () => {
                                 ₹{itemGrossRent.toFixed(2)}
                               </span>
                               <span className="block font-bold text-emerald-600">
-                                Rent: ₹{(itemGrossRent - itemDiscount).toFixed(2)} (-10%)
+                                Rent: ₹{(itemGrossRent - itemDiscount).toFixed(2)}
                               </span>
                             </>
                           ) : (
@@ -427,37 +453,80 @@ const Cart = () => {
                       </div>
                     </div>
 
-                    {/* Multi-Coupon Buttons */}
-                    {coupons.length > 0 && (
+                    {/* Store Coupons Selector */}
+                    {storeCoupons.length > 0 && (
                       <div className="pt-3 border-t border-gray-100 flex flex-wrap items-center justify-between gap-2 text-xs">
                         <div className="flex items-center gap-2">
                           <Tag className="w-3.5 h-3.5 text-emerald-600" />
-                          <span className="font-semibold text-gray-700">Apply Loyalty Privilege Voucher:</span>
+                          <span className="font-semibold text-gray-700">Store Promotional Codes:</span>
                         </div>
 
                         <div className="flex flex-wrap gap-2">
-                          {coupons.map((c) => {
+                          {storeCoupons.map((c) => {
                             const isSelectedHere = assignedCouponId === c.id;
                             const isUsedElsewhere = Object.entries(appliedCoupons).some(
                               ([prodId, coupId]) => parseInt(prodId, 10) !== item.product_id && coupId === c.id
                             );
 
+                            // 1. Calculate actual rental days accurately from start and end dates
+                            const sDate = new Date(item.start_date);
+                            const eDate = new Date(item.end_date);
+                            const diffDays = Math.ceil(Math.abs(eDate - sDate) / (1000 * 60 * 60 * 24)) + 1;
+
+                            // 2. Accurate validation checks
+                            const meetsMinRent = itemGrossRent >= parseFloat(c.min_order_amount || 0);
+                            const meetsMinDays = diffDays >= parseInt(c.min_rental_days || 1, 10);
+                            const isEligible = meetsMinRent && meetsMinDays;
+
+                            const label =
+                              c.discount_type === 'FLAT'
+                                ? `₹${parseFloat(c.discount_value)} OFF`
+                                : `${parseFloat(c.discount_value)}% OFF`;
+
                             return (
                               <button
                                 key={c.id}
                                 type="button"
-                                onClick={() => handleToggleCoupon(item.product_id, c.id)}
-                                disabled={isUsedElsewhere}
+                                onClick={() => {
+                                  if (!meetsMinRent) {
+                                    alert(
+                                      `Coupon "${c.code}" requires minimum rental charges of ₹${parseFloat(
+                                        c.min_order_amount
+                                      ).toFixed(2)} (Current rent: ₹${itemGrossRent.toFixed(2)}).`
+                                    );
+                                    return;
+                                  }
+                                  if (!meetsMinDays) {
+                                    alert(
+                                      `Coupon "${c.code}" requires a minimum rental duration of ${c.min_rental_days} day(s) (Selected duration: ${diffDays} day(s)).`
+                                    );
+                                    return;
+                                  }
+                                  handleToggleCoupon(item.product_id, c.id);
+                                }}
+                                disabled={isUsedElsewhere || (!isSelectedHere && !isEligible)}
                                 className={`px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
                                   isSelectedHere
                                     ? 'bg-emerald-600 text-white shadow-sm'
-                                    : isUsedElsewhere
+                                    : isUsedElsewhere || !isEligible
                                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200 opacity-60'
                                     : 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
                                 }`}
                               >
                                 {isSelectedHere && <CheckCircle2 className="w-3 h-3" />}
-                                <span>{c.code} (10% OFF)</span>
+                                <span>
+                                  {c.code} ({label})
+                                </span>
+                                {!meetsMinRent && (
+                                  <span className="text-[9px] text-amber-700 font-normal">
+                                    (Min ₹{parseFloat(c.min_order_amount).toFixed(0)})
+                                  </span>
+                                )}
+                                {meetsMinRent && !meetsMinDays && (
+                                  <span className="text-[9px] text-amber-700 font-normal">
+                                    (Min {c.min_rental_days}d)
+                                  </span>
+                                )}
                               </button>
                             );
                           })}
@@ -469,7 +538,7 @@ const Cart = () => {
               })}
             </div>
 
-            {/* Frequently Rented Together Cross-Sell Recommendation Card */}
+            {/* Frequently Rented Together Recommendations */}
             {frequentlyRented.length > 0 && (
               <div className="bg-white p-5 rounded-xl border border-indigo-100 shadow-sm space-y-3">
                 <div className="flex items-center justify-between border-b border-gray-100 pb-2">
@@ -532,11 +601,11 @@ const Cart = () => {
             )}
           </div>
 
-          {/* Checkout Breakdown (4 cols) */}
+          {/* Checkout Summary (4 cols) */}
           <div className="lg:col-span-4">
             <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm space-y-4">
               <h2 className="text-sm font-extrabold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-3">
-                Order Summary
+                Rental Summary
               </h2>
 
               <div className="space-y-2.5 text-xs">
@@ -549,7 +618,7 @@ const Cart = () => {
 
                 {calculatedDiscount > 0 && (
                   <div className="flex justify-between text-emerald-600 font-semibold">
-                    <span>Loyalty Voucher Savings:</span>
+                    <span>Store Discounts Applied:</span>
                     <span>-₹{calculatedDiscount.toFixed(2)}</span>
                   </div>
                 )}
@@ -561,7 +630,7 @@ const Cart = () => {
                     ) : (
                       <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
                     )}
-                    Total Escrow Deposit:
+                    Refundable Security Deposit:
                   </span>
                   <span className="font-bold text-gray-900">
                     ₹{calculatedDeposit.toFixed(2)}
@@ -569,12 +638,24 @@ const Cart = () => {
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-gray-200 flex justify-between items-center">
-                <span className="font-extrabold text-gray-900 text-sm">Payable Total:</span>
+              <div className="pt-3 border-t border-gray-200 flex justify-between items-center text-sm">
+                <span className="font-extrabold text-gray-900">Payable to Store:</span>
                 <span className="text-lg font-black text-blue-600">
                   ₹{calculatedGrandTotal.toFixed(2)}
                 </span>
               </div>
+
+              {/* Store Operational Warning */}
+              {isCheckoutBlocked && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                  <p>
+                    {!storeVendor?.hasGatewayConfigured
+                      ? 'This store is setting up its payment gateway. Checkout is temporarily unavailable.'
+                      : 'This store is temporarily paused for annual licensing renewal. Please check back later.'}
+                  </p>
+                </div>
+              )}
 
               <button
                 onClick={() =>
@@ -584,9 +665,16 @@ const Cart = () => {
                     },
                   })
                 }
-                className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold shadow-sm transition"
+                disabled={isCheckoutBlocked}
+                className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <span>Proceed to Checkout</span>
+                <span>
+                  {storeVendor?.isRenewalDue
+                    ? 'Store License Renewal Overdue'
+                    : !storeVendor?.hasGatewayConfigured
+                    ? 'Gateway Setup Pending'
+                    : 'Proceed to Checkout'}
+                </span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             </div>
@@ -598,8 +686,3 @@ const Cart = () => {
 };
 
 export default Cart;
-
-
-/*
-What is being added:Co-Occurrence API Call: Collects all product IDs currently in the user's cart and queries POST /api/v1/rms/user/recommendations/frequentlyRentedTogether.  1-Click Quick Add Feature: Each recommended complementary accessory or product can be added immediately into the cart with matching default dates inherited from the cart's primary booking.  Smart Duplicate Filtering: Recommended items exclude products already in the cart to avoid redundant suggestions. 
-*/

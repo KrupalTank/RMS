@@ -27,6 +27,7 @@ import {
   ChevronRight,
   Sparkles,
   Calendar,
+  Tag,
 } from 'lucide-react';
 
 import { io } from 'socket.io-client';
@@ -49,6 +50,9 @@ const ProductDetail = () => {
   const [reviews, setReviews] = useState([]);
   const [similarProducts, setSimilarProducts] = useState([]);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
+  const [storePaused, setStorePaused] = useState(false); // 👈 Added
+
+  const [storeCoupons, setStoreCoupons] = useState([]);
 
   // Form State
   const [startDate, setStartDate] = useState('');
@@ -66,17 +70,31 @@ const ProductDetail = () => {
       setAvailabilityLoading(true);
       setActiveImageIndex(0);
       setStatus({ success: '', error: '' });
+      setStorePaused(false);
 
       try {
         const [prodRes, similarRes, availRes] = await Promise.all([
           api.get(`/user/getProduct/${id}`),
-          api.get(`/user/recommendations/similar/${id}?limit=6`),
+          api.get(`/user/recommendations/similar/${id}?limit=6`).catch(() => ({ data: { success: false, products: [] } })),
           api.get(`/user/productAvailability/${id}`).catch(() => ({ data: { success: false, days: [] } })),
         ]);
 
         if (prodRes.data.success) {
-          setProduct(prodRes.data.product);
+          const prodData = prodRes.data.product;
+          setProduct(prodData);
           setReviews(prodRes.data.reviews || []);
+
+          // Fetch active store coupons for this vendor
+          if (prodData?.vendor_id) {
+            try {
+              const couponRes = await api.get(`/user/storeCoupons/${prodData.vendor_id}`);
+              if (couponRes.data.success) {
+                setStoreCoupons(couponRes.data.coupons || []);
+              }
+            } catch (cErr) {
+              console.error('Failed to load store coupons:', cErr);
+            }
+          }
         }
 
         if (similarRes.data.success) {
@@ -87,10 +105,18 @@ const ProductDetail = () => {
           setAvailabilityDays(availRes.data.days || []);
         }
       } catch (err) {
-        setStatus({
-          success: '',
-          error: err.response?.data?.message || 'Failed to load product details.',
-        });
+        if (err.response?.status === 403) {
+          setStorePaused(true);
+          setStatus({
+            success: '',
+            error: err.response.data?.message || 'This store is temporarily paused.',
+          });
+        } else {
+          setStatus({
+            success: '',
+            error: err.response?.data?.message || 'Failed to load product details.',
+          });
+        }
       } finally {
         setLoading(false);
         setAvailabilityLoading(false);
@@ -139,6 +165,26 @@ const ProductDetail = () => {
     return (
       <div className="flex items-center justify-center min-h-[70vh]">
         <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  if (storePaused) {
+    return (
+      <div className="max-w-2xl mx-auto p-8 my-12 bg-white rounded-2xl border border-amber-200 shadow-sm text-center space-y-4">
+        <div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center mx-auto text-amber-600">
+          <Calendar className="w-6 h-6" />
+        </div>
+        <h2 className="text-xl font-black text-gray-900">Store Temporarily Paused</h2>
+        <p className="text-sm text-gray-600 max-w-md mx-auto">
+          {status.error || 'This vendor store is temporarily paused due to an overdue annual licensing renewal. New bookings are locked. Please check back soon!'}
+        </p>
+        <button
+          onClick={() => navigate('/')}
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-sm"
+        >
+          <ArrowLeft className="w-4 h-4" /> Browse Active Catalog
+        </button>
       </div>
     );
   }
@@ -414,6 +460,44 @@ const ProductDetail = () => {
               </div>
             </div>
 
+            {/* Store Coupons & Promo Offers Strip */}
+            {storeCoupons.length > 0 && (
+              <div className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-xl space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900">
+                  <Tag className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Available Store Offers:</span>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {storeCoupons.map((c) => (
+                    <div
+                      key={c.id}
+                      className="bg-white border border-emerald-300 px-2.5 py-1.5 rounded-lg flex items-center gap-2 shadow-xs text-xs"
+                    >
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono font-black text-emerald-800 tracking-wider">
+                            {c.code}
+                          </span>
+                          <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded">
+                            {c.discount_type === 'FLAT'
+                              ? `₹${parseFloat(c.discount_value)} OFF`
+                              : `${parseFloat(c.discount_value)}% OFF`}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-gray-500 mt-0.5">
+                          Min Rent: ₹{parseFloat(c.min_order_amount || 0)} • Min {c.min_rental_days || 1}d
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] text-emerald-700 italic">
+                  * Applicable directly on your rental cart during checkout.
+                </p>
+              </div>
+            )}
+
             <div className="flex justify-between text-gray-600 text-xs">
               <span>Cancellation Policy:</span>
               <span className="font-semibold text-gray-800">
@@ -468,7 +552,7 @@ const ProductDetail = () => {
                       <label className="block text-xs font-semibold text-gray-700 mb-1">Start Date</label>
                       <input
                         type="date"
-                        min={todayStr}
+                        // min={todayStr}
                         value={startDate}
                         onChange={(e) => setStartDate(e.target.value)}
                         className="w-full text-xs p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
@@ -478,7 +562,7 @@ const ProductDetail = () => {
                       <label className="block text-xs font-semibold text-gray-700 mb-1">End Date</label>
                       <input
                         type="date"
-                        min={startDate || todayStr}
+                        // min={startDate || todayStr}
                         value={endDate}
                         onChange={(e) => setEndDate(e.target.value)}
                         className="w-full text-xs p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"

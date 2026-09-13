@@ -1,23 +1,10 @@
-/*
-getSimilarProducts (Weighted Content & Locality Scoring):
-Category Affinity (+40 pts): Matches items in the same category. 
-City Proximity (+30 pts): Matches items in the customer's city for easy pickup.
-Pricing Bracket (+20 pts): Proximity score based on daily rental rate difference ($\vert{}\Delta \text{Rent}\vert{}$).  
-Customer Review Rating (+10 pts): Boosts items with 4+ star verified reviews.  
-
-getFrequentlyRentedTogether (Co-Occurrence Mining):
-Computes multi-item co-occurrence across shared group_id checkout groups in orders (excluding the items already in the user's cart).  
-
-getPersonalizedFeed (User Profile & History Collaborative Scoring):
-Analyzes the customer's completed/active rental history to identify top category preferences, boosts local inventory in their city, and ranks the rest by average review ratings.  
-*/
-
 // services/recommendationService.js
 const pool = require('../config/db');
 
 /**
  * 1. Content & Locality-Based Similarity
  * Recommends substitutes and similar equipment on ProductDetail page.
+ * Strictly filters out items from expired, blocked, or unconfigured vendors.
  */
 async function getSimilarProducts(productId, userCity = '', limit = 6) {
   try {
@@ -64,6 +51,10 @@ async function getSimilarProducts(productId, userCity = '', limit = 6) {
       LEFT JOIN reviews r ON p.id = r.product_id
       WHERE p.id != $1 
         AND p.total_quantity > 0
+        AND u.is_blocked = FALSE
+        AND u.subscription_renewal_date >= CURRENT_DATE
+        AND u.razorpay_key_id IS NOT NULL
+        AND u.razorpay_key_secret IS NOT NULL
       GROUP BY p.id, c.name, u.city, u.address, u.phone
       ORDER BY recommendation_score DESC, p.created_at DESC
       LIMIT $5
@@ -87,6 +78,7 @@ async function getSimilarProducts(productId, userCity = '', limit = 6) {
 /**
  * 2. Association Rule Mining ("Frequently Rented Together")
  * Analyzes co-occurrence in orders table by group_id.
+ * Excludes products belonging to expired or unconfigured vendors.
  */
 async function getFrequentlyRentedTogether(productIds = [], limit = 4) {
   try {
@@ -126,6 +118,10 @@ async function getFrequentlyRentedTogether(productIds = [], limit = 4) {
       JOIN users u ON p.vendor_id = u.id
       LEFT JOIN reviews r ON p.id = r.product_id
       WHERE p.total_quantity > 0
+        AND u.is_blocked = FALSE
+        AND u.subscription_renewal_date >= CURRENT_DATE
+        AND u.razorpay_key_id IS NOT NULL
+        AND u.razorpay_key_secret IS NOT NULL
       GROUP BY p.id, c.name, u.city, u.address, u.phone, co.co_occurrence_count
       ORDER BY co.co_occurrence_count DESC, avg_rating DESC
       LIMIT $2
@@ -133,7 +129,7 @@ async function getFrequentlyRentedTogether(productIds = [], limit = 4) {
 
     const result = await pool.query(query, [productIds, limit]);
 
-    // Fallback: If no co-occurrences exist yet (new items), suggest top-rated items from other categories
+    // Fallback: If no co-occurrences exist yet, suggest top-rated active items
     if (result.rows.length === 0) {
       const fallbackQuery = `
         SELECT 
@@ -150,6 +146,10 @@ async function getFrequentlyRentedTogether(productIds = [], limit = 4) {
         LEFT JOIN reviews r ON p.id = r.product_id
         WHERE p.id != ALL($1::int[]) 
           AND p.total_quantity > 0
+          AND u.is_blocked = FALSE
+          AND u.subscription_renewal_date >= CURRENT_DATE
+          AND u.razorpay_key_id IS NOT NULL
+          AND u.razorpay_key_secret IS NOT NULL
         GROUP BY p.id, c.name, u.city, u.address, u.phone
         ORDER BY avg_rating DESC, p.created_at DESC
         LIMIT $2
@@ -168,6 +168,7 @@ async function getFrequentlyRentedTogether(productIds = [], limit = 4) {
 /**
  * 3. Personalized Feed ("Recommended For You")
  * Personalizes feed based on user's past rental categories and city locality.
+ * Recommends items only from verified active vendors.
  */
 async function getPersonalizedFeed(userId, userCity = '', limit = 8) {
   try {
@@ -204,6 +205,10 @@ async function getPersonalizedFeed(userId, userCity = '', limit = 8) {
       LEFT JOIN UserPreferredCategories upc ON p.category_id = upc.category_id
       LEFT JOIN reviews r ON p.id = r.product_id
       WHERE p.total_quantity > 0
+        AND u.is_blocked = FALSE
+        AND u.subscription_renewal_date >= CURRENT_DATE
+        AND u.razorpay_key_id IS NOT NULL
+        AND u.razorpay_key_secret IS NOT NULL
       GROUP BY p.id, c.name, u.city, u.address, u.phone, upc.rental_weight
       ORDER BY personal_score DESC, p.created_at DESC
       LIMIT $3
