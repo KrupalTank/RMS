@@ -38,4 +38,7 @@ router.post('/triggerLostOrdersCheck', adminController.triggerLostOrdersCheck);
 
 router.post('/triggerLicenseExpiryCheck', adminController.triggerLicenseExpiryCheck);
 
+// Admin Taxonomy Management
+router.post('/addCategory', validateRequired(['name']), adminController.addCategory);
+
 module.exports = router;

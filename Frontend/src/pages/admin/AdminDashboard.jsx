@@ -26,7 +26,7 @@ import {
   DollarSign,
   Tag,
   Shield,
-  FileSpreadsheet,
+  FolderPlus,
 } from 'lucide-react';
 
 const AdminDashboard = () => {
@@ -43,13 +43,18 @@ const AdminDashboard = () => {
   const [officers, setOfficers] = useState([]);
   const [annualBillingLedger, setAnnualBillingLedger] = useState([]);
 
+  // Category Taxonomy State
+  const [showAddCategoryModal, setShowAddCategoryModal] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [addingCategory, setAddingCategory] = useState(false);
+
   // Transaction Ledger State
   const [ledgerData, setLedgerData] = useState({
     summary: {},
     inflowTransactions: [],
     outflowRefunds: [],
   });
-  const [ledgerFilter, setLedgerFilter] = useState('all'); // 'all' | 'inflow' | 'outflow'
+  const [ledgerFilter, setLedgerFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState({ success: '', error: '' });
 
@@ -113,7 +118,7 @@ const AdminDashboard = () => {
     }
   };
 
-  // 6. Fetch Annual SaaS Licensing Ledger (5% Platform Royalties)
+  // 6. Fetch Annual SaaS Licensing Ledger
   const fetchAnnualBilling = async () => {
     try {
       const res = await api.get('/admin/annualBillingAudit');
@@ -220,7 +225,6 @@ const AdminDashboard = () => {
     }
   };
 
-  // Manual Trigger: License Expiry Audit (Generates pending 5% annual bills)
   const handleTriggerLicenseExpiryCheck = async () => {
     setLicenseAuditLoading(true);
     try {
@@ -233,6 +237,25 @@ const AdminDashboard = () => {
       setBanner({ success: '', error: err.response?.data?.message || 'License audit failed.' });
     } finally {
       setLicenseAuditLoading(false);
+    }
+  };
+
+  const handleAddCategory = async (e) => {
+    e.preventDefault();
+    if (!newCategoryName.trim()) return;
+
+    setAddingCategory(true);
+    try {
+      const res = await api.post('/admin/addCategory', { name: newCategoryName.trim() });
+      if (res.data.success) {
+        setBanner({ success: res.data.message, error: '' });
+        setNewCategoryName('');
+        setShowAddCategoryModal(false);
+      }
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to create category.');
+    } finally {
+      setAddingCategory(false);
     }
   };
 
@@ -326,10 +349,17 @@ const AdminDashboard = () => {
 
         <div className="flex items-center gap-2 flex-wrap">
           <button
+            onClick={() => setShowAddCategoryModal(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm transition"
+          >
+            <FolderPlus className="w-4 h-4" />
+            <span>Add Category</span>
+          </button>
+
+          <button
             onClick={handleTriggerLicenseExpiryCheck}
             disabled={licenseAuditLoading}
             className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm transition disabled:opacity-50"
-            title="Scan vendors whose renewal date has arrived and generate pending 5% annual royalty bills"
           >
             <ShieldCheck className="w-4 h-4" />
             <span>{licenseAuditLoading ? 'Auditing...' : 'Run License Expiry Audit'}</span>
@@ -423,7 +453,6 @@ const AdminDashboard = () => {
             </div>
           </div>
 
-          {/* User Role Distribution */}
           <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-3">
             <h3 className="text-sm font-bold text-gray-800">User Role Distribution</h3>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
@@ -580,7 +609,6 @@ const AdminDashboard = () => {
                           {b.payment_status}
                         </span>
                       </td>
-                      {/* AFTER: Automated Ledger Record */}
                       <td className="p-3 text-right">
                         {b.payment_status === 'PAID' ? (
                           <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-1 rounded border border-emerald-200 inline-block">
@@ -650,7 +678,6 @@ const AdminDashboard = () => {
             </div>
           </div>
 
-          {/* Filter Pills */}
           <div className="flex gap-2 text-xs font-semibold overflow-x-auto pb-1">
             {[
               { id: 'all', label: 'All Operations' },
@@ -686,7 +713,6 @@ const AdminDashboard = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {/* INFLOW ROWS */}
                 {(ledgerFilter === 'all' || ledgerFilter === 'inflow') &&
                   ledgerData.inflowTransactions.map((t) => (
                     <tr key={`inflow-${t.group_id}`} className="hover:bg-emerald-50/30">
@@ -722,7 +748,6 @@ const AdminDashboard = () => {
                     </tr>
                   ))}
 
-                {/* OUTFLOW ROWS */}
                 {(ledgerFilter === 'all' || ledgerFilter === 'outflow') &&
                   ledgerData.outflowRefunds.map((o) => (
                     <tr key={`outflow-${o.order_id}`} className="hover:bg-rose-50/30">
@@ -858,7 +883,7 @@ const AdminDashboard = () => {
                       onClick={() => handleDeleteProduct(p.id)}
                       className="w-full py-1.5 bg-red-50 text-red-700 hover:bg-red-100 rounded font-bold transition"
                     >
-                      Force Delist (Stock $\rightarrow$ 0)
+                      Force Delist (Stock → 0)
                     </button>
                   </div>
                 ))}
@@ -986,6 +1011,49 @@ const AdminDashboard = () => {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: ADMIN ADD CATEGORY */}
+      {showAddCategoryModal && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white max-w-sm w-full rounded-xl shadow-xl border border-gray-200 p-5 space-y-4">
+            <div className="flex justify-between items-center border-b border-gray-100 pb-2">
+              <h3 className="text-sm font-bold text-gray-900">Add Public Category</h3>
+              <button onClick={() => setShowAddCategoryModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleAddCategory} className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">Category Name</label>
+                <input
+                  type="text"
+                  required
+                  value={newCategoryName}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
+                  placeholder="e.g. Drones, Lighting, Audio"
+                  className="w-full text-xs p-2 border border-gray-300 rounded focus:ring-emerald-500"
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddCategoryModal(false)}
+                  className="px-3 py-1.5 border border-gray-300 rounded text-xs text-gray-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={addingCategory}
+                  className="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs font-bold disabled:opacity-50"
+                >
+                  {addingCategory ? 'Adding...' : 'Save Category'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

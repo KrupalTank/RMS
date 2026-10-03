@@ -23,10 +23,13 @@ exports.signup = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Please provide all required fields.' });
     }
 
+    const normalizedEmail = email.toLowerCase().trim();
+    const cleanPhone = phone.trim();
+
     // Check if email or phone already exists
     const existingUser = await pool.query(
       'SELECT id FROM users WHERE email = $1 OR phone = $2',
-      [email.toLowerCase().trim(), phone.trim()]
+      [normalizedEmail, cleanPhone]
     );
 
     if (existingUser.rows.length > 0) {
@@ -48,13 +51,13 @@ exports.signup = async (req, res) => {
           subscription_start_date, subscription_renewal_date
         ) 
        VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8,
-         CASE WHEN $5 = 'vendor' THEN CURRENT_DATE ELSE NULL END,
-         CASE WHEN $5 = 'vendor' THEN (CURRENT_DATE + INTERVAL '1 year')::DATE ELSE NULL END
+         $1, $2, $3, $4, $5::user_role, $6, $7, $8,
+         CASE WHEN $5::text = 'vendor' THEN CURRENT_DATE ELSE NULL END,
+         CASE WHEN $5::text = 'vendor' THEN (CURRENT_DATE + INTERVAL '1 year')::DATE ELSE NULL END
        ) 
        RETURNING id, full_name, email, phone, role, kyc_status, city, 
                  subscription_start_date, subscription_renewal_date`,
-      [full_name.trim(), email.toLowerCase().trim(), phone.trim(), password_hash, role, address || null, city || null, pincode || null]
+      [full_name.trim(), normalizedEmail, cleanPhone, password_hash, role, address || null, city || null, pincode || null]
     );
 
     const user = newUser.rows[0];
@@ -74,6 +77,7 @@ exports.signup = async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
+    // Send welcome email (and attaches Agreement PDF if role === 'vendor')
     sendWelcomeEmail({
       user,
     });

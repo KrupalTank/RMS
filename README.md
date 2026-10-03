@@ -360,3 +360,65 @@ Mid-Grace Period Order Contamination
 Orders returned during the 3-day grace window risked modifying the finalized PENDING invoice that the vendor was actively attempting to pay.
 
 Immutable Invoice Freezing: Configured database triggers to freeze any row marked 'PENDING' or 'PAID'. Any order returned after the cycle end date is routed into an 'ACCUMULATING' row for the subsequent cycle year without modifying the issued invoice.
+
+### 🏷️ Version 7.0.0 — Administrative Taxonomy Control, Legal Hold-Harmless Framework & Automated Annual Licensing Engine
+
+#### 📌 Overview & Motivation
+Building on the **Zero-Intermediation Direct Gateway Model** introduced in Version 6.0.0, Version 7.0.0 focuses on administrative platform governance, vendor onboarding legal compliance, and strict product liability isolation. 
+
+Prior to this version, individual vendors could arbitrarily create product categories, leading to category fragmentation and catalog clutter[cite: 21]. Additionally, shifting to direct vendor-to-customer payouts created a critical legal requirement: explicitly establishing that RMS functions purely as an unmediated SaaS software provider. 
+
+Version 7.0.0 resolves these governance challenges by:
+1. **Centralizing Taxonomy Governance:** Restricting category creation exclusively to platform administrators.
+2. **Implementing Legal Release & Liability Waivers:** Requiring mandatory agreement to a **Product Liability Waiver & Hold-Harmless Clause** upon vendor signup.
+3. **Automating Merchant Onboarding Setup:** Embedding a detailed **4-Step Direct Razorpay Merchant Integration Guide** into legally binding PDF Vendor Agreements.
+4. **Hardening Database Type Safety:** Resolving custom PostgreSQL ENUM type coercion mismatches (`text versus user_role`) during user registration.
+
+---
+
+#### 🚨 Problems Encountered & Architectural Solutions
+
+| Challenge / Problem | Root Cause | Engineering Solution |
+| :--- | :--- | :--- |
+| **Catalog Fragmentation & Arbitrary Categories**[cite: 21] | Vendors could create arbitrary product categories during item listing, resulting in duplicate categories (e.g., "Camera", "Cameras", "DSLRs") and unorganized search feeds[cite: 21]. | **Administrative Taxonomy Control:** Removed category creation controls from `VendorDashboard.jsx`[cite: 21]. Built a centralized **Add Public Category** modal in `AdminDashboard.jsx` (`POST /api/v1/rms/admin/addCategory`), enforcing single-source administrative category management[cite: 22, 25]. |
+| **Platform Liability & Direct Gateway Exposure**[cite: 1, 2] | Under the zero-intermediation model where vendors handle payouts directly via their own Razorpay merchant accounts, equipment defects or injuries posed third-party liability risks to the platform[cite: 1, 2]. | **Legal Hold-Harmless & Liability Waiver:** Updated vendor signup terms and the generated PDF Vendor Agreement (`pdfGenerator.js`) to include explicit **Product Liability Waiver**, **Hold-Harmless Release**, and **Merchant Gateway Responsibility** clauses[cite: 1, 2]. |
+| **Merchant Setup Friction**[cite: 2] | Vendors were unclear on how to obtain and link their personal Razorpay API Key ID and Key Secret to enable storefront checkouts[cite: 2]. | **Embedded Setup Guide in PDF Contract:** Enhanced `generateVendorAgreementPDF` in `pdfGenerator.js` with a dedicated 4-Step visual guide detailing Razorpay account creation, KYC verification, API key generation, and dashboard configuration[cite: 2]. |
+| **PostgreSQL Enum Type Coercion Error (`42P08`)**[cite: 24] | In `authController.js`, parameter `$5` was passed as a plain JS string into a SQL `CASE WHEN $5 = 'vendor'` clause, causing a type mismatch against the custom database `user_role` enum (`detail: text versus user_role`)[cite: 24]. | **Explicit SQL Parameter Casting:** Refactored the `signup` insert query in `authController.js` to explicitly cast parameters (`$5::user_role` for insertion and `$5::text = 'vendor'` for conditional date evaluations)[cite: 24]. |
+| **Mandatory Legacy Field Rejections** | The signup route enforced legacy `bank_account_no` and `bank_ifsc` fields, throwing validation errors during registration despite payouts moving to direct Razorpay keys. | **Validation Schema Alignment:** Removed `bank_account_no` and `bank_ifsc` from backend validation middleware (`authRoutes.js`) and controller checks (`authController.js`), aligning registration fields with the direct merchant model. |
+
+---
+
+#### ⚙️ Technical Implementation Details
+
+1. **Frontend Authentication & Terms Agreement (`Signup.jsx`):**
+   * Added an **RMS Zero-Intermediation & Vendor Partnership Terms** box for vendor registrations.
+   * Mandates explicit checkbox acceptance covering direct payouts, 365-day licensing cycles, 5% annual net rent royalties, 3-day grace buffers, and product liability releases before enabling registration.
+
+2. **PDF Legal Contract Generation (`pdfGenerator.js`):**
+   * Refactored `generateVendorAgreementPDF` to produce a legally binding **Vendor Merchant Partnership Agreement & Product Liability Waiver**[cite: 1, 2].
+   * **Clause Breakdown:**
+     * **Clause 1:** Unmediated SaaS Software Infrastructure Provider Status[cite: 1, 2].
+     * **Clause 2:** Absolute Product Liability Waiver & Platform Non-Liability Release[cite: 1, 2].
+     * **Clause 3:** Merchant Razorpay Account Creation & Compliance Responsibility[cite: 1, 2].
+     * **Clause 4:** Annual 5% SaaS Licensing Royalty & 3-Day Grace Policy[cite: 1, 2].
+     * **Clause 5:** Catalog Compliance & Administrative Taxonomy Control[cite: 1, 2].
+   * **Step-by-Step Setup Banner:** Renders a 4-step walkthrough for creating, verifying, and linking Razorpay API keys[cite: 2].
+
+3. **Admin Taxonomy & Governance Console (`AdminDashboard.jsx`):**
+   * Integrated a **FolderPlus** category management modal allowing platform admins to expand global product taxonomies[cite: 22, 25].
+   * Vendors select from these pre-approved categories when listing inventory[cite: 21, 22].
+
+4. **Database Parameter Handling (`authController.js`):**
+   * Standardized SQL type coercion across user creation:
+     ```sql
+     INSERT INTO users (
+       full_name, email, phone, password_hash, role, 
+       address, city, pincode,
+       subscription_start_date, subscription_renewal_date
+     ) 
+     VALUES (
+       $1, $2, $3, $4, $5::user_role, $6, $7, $8,
+       CASE WHEN $5::text = 'vendor' THEN CURRENT_DATE ELSE NULL END,
+       CASE WHEN $5::text = 'vendor' THEN (CURRENT_DATE + INTERVAL '1 year')::DATE ELSE NULL END
+     )
+     ```

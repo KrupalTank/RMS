@@ -520,26 +520,26 @@ exports.getCategories = async (req, res) => {
 };
 
 // POST /api/v1/rms/vendor/addCategory
-exports.addCategory = async (req, res) => {
-  try {
-    const { name } = req.body;
-    if (!name) return res.status(400).json({ success: false, message: 'Category name is required.' });
+// exports.addCategory = async (req, res) => {
+//   try {
+//     const { name } = req.body;
+//     if (!name) return res.status(400).json({ success: false, message: 'Category name is required.' });
 
-    const result = await pool.query(
-      'INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING *',
-      [name.trim()]
-    );
+//     const result = await pool.query(
+//       'INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING *',
+//       [name.trim()]
+//     );
 
-    if (result.rows.length === 0) {
-      return res.status(409).json({ success: false, message: 'Category already exists.' });
-    }
+//     if (result.rows.length === 0) {
+//       return res.status(409).json({ success: false, message: 'Category already exists.' });
+//     }
 
-    return res.status(201).json({ success: true, category: result.rows[0] });
-  } catch (error) {
-    console.error('Add Category Error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to create category.' });
-  }
-};
+//     return res.status(201).json({ success: true, category: result.rows[0] });
+//   } catch (error) {
+//     console.error('Add Category Error:', error);
+//     return res.status(500).json({ success: false, message: 'Failed to create category.' });
+//   }
+// };
 
 // GET /api/v1/rms/vendor/getOrders
 exports.getVendorOrders = async (req, res) => {

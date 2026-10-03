@@ -525,3 +525,32 @@ exports.triggerLicenseExpiryCheck = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to execute license audit.' });
   }
 };
+
+// POST /api/v1/rms/admin/addCategory
+// Restricts taxonomy creation exclusively to platform administrators
+exports.addCategory = async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name) {
+      return res.status(400).json({ success: false, message: 'Category name is required.' });
+    }
+
+    const result = await pool.query(
+      'INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING *',
+      [name.trim()]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(409).json({ success: false, message: 'Category already exists.' });
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: `Category "${result.rows[0].name}" added to public taxonomy.`,
+      category: result.rows[0],
+    });
+  } catch (error) {
+    console.error('Admin Add Category Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to create category.' });
+  }
+};

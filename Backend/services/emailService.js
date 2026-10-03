@@ -215,8 +215,9 @@ async function sendDepositRefundSettlementEmail({
   }
 }
 
+
 /**
- * 4. Sends Welcome Email on Successful Signup
+ * 4. Sends Welcome Email on Successful Signup with Vendor Agreement PDF Attachment
  */
 async function sendWelcomeEmail({ user }) {
   try {
@@ -234,11 +235,30 @@ async function sendWelcomeEmail({ user }) {
 
     const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
 
+    // Generate Agreement PDF buffer if user is registering as a vendor
+    let attachments = [];
+    if (isVendor) {
+      try {
+        const { generateVendorAgreementPDF } = require('../utils/pdfGenerator');
+        const pdfBuffer = await generateVendorAgreementPDF({
+          vendor: user,
+          acceptedAt: new Date(),
+        });
+        attachments.push({
+          filename: `RMS_Vendor_Merchant_Agreement_${user.id || 'REG'}.pdf`,
+          content: pdfBuffer,
+          contentType: 'application/pdf',
+        });
+      } catch (pdfErr) {
+        console.error('⚠️ Failed to attach Vendor Agreement PDF to welcome email:', pdfErr.message);
+      }
+    }
+
     const mailOptions = {
       from: process.env.EMAIL_FROM,
       to: user.email,
       subject: isVendor
-        ? 'Welcome Vendor Partner - RMS 0% Cut & Annual Licensing Agreement'
+        ? 'Welcome Vendor Partner - Executed Merchant Agreement & RMS Policy'
         : 'Welcome to RMS - Account Created Successfully!',
       html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 12px; padding: 28px; background-color: #ffffff;">
@@ -287,6 +307,11 @@ async function sendWelcomeEmail({ user }) {
             </ul>
           </div>
 
+          <!-- Attachment Notice -->
+          <div style="background-color: #F0FDF4; border: 1px solid #BBF7D0; border-radius: 8px; padding: 14px; margin: 20px 0; font-size: 13px; color: #166534;">
+            📎 <b>Executed Contract Attached:</b> A PDF copy of your executed <b>RMS Vendor Merchant Partnership & Hold-Harmless Agreement</b> is attached to this email for your financial and legal records.
+          </div>
+
           <!-- Next Step Action -->
           <div style="background-color: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 8px; padding: 14px; margin: 20px 0; font-size: 13px; color: #065F46;">
             <b>Next Step:</b> Log in to your <a href="${clientUrl}/vendor/dashboard" style="color: #059669; font-weight: bold; text-decoration: underline;">Vendor Hub</a>, navigate to <b>Payment Gateway & License</b>, and save your direct Razorpay Key ID and Secret to activate your equipment listings.
@@ -306,10 +331,11 @@ async function sendWelcomeEmail({ user }) {
           </p>
         </div>
       `,
+      attachments,
     };
 
     await transporter.sendMail(mailOptions);
-    console.log(`📧 Welcome email sent to ${user.email}`);
+    console.log(`📧 Welcome email sent to ${user.email} (Vendor PDF attached: ${isVendor})`);
   } catch (error) {
     console.error('⚠️ Failed to send welcome email:', error.message);
   }

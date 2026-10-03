@@ -29,7 +29,7 @@ const Signup = () => {
     setError('');
 
     if (formData.role === 'vendor' && !agreedToVendorTerms) {
-      setError('You must review and accept the Annual RMS Licensing & Zero-Commission Policy to register as a Vendor.');
+      setError('You must review and accept the Annual RMS Licensing, Product Liability Waiver & Merchant Gateway Policy to register as a Vendor.');
       return;
     }
 
@@ -152,19 +152,26 @@ const Signup = () => {
             />
           </div>
 
-          {/* Vendor Mandatory Annual Licensing & 0% Per-Order Commission Agreement */}
+          {/* Vendor Mandatory Licensing, Liability Waiver & Direct Gateway Policy Box */}
           {formData.role === 'vendor' && (
             <div className="bg-slate-900 text-white p-4 sm:p-5 rounded-2xl border border-emerald-500/40 text-xs space-y-3 shadow-sm">
               <div className="flex items-center gap-2 font-bold text-emerald-400 border-b border-white/10 pb-2">
                 <ShieldCheck className="w-5 h-5 text-emerald-400 flex-shrink-0" />
-                <span className="text-sm font-black">RMS Zero-Intermediation & Licensing Agreement</span>
+                <span className="text-sm font-black">RMS Zero-Intermediation & Vendor Partnership Terms</span>
               </div>
 
               <div className="space-y-2 text-[11px] text-gray-300 leading-relaxed">
                 <div className="flex items-start gap-2">
                   <span className="text-emerald-400 font-bold">•</span>
                   <span>
-                    <b className="text-white">Direct-to-Vendor Payouts (0% Per-Order Cut):</b> 100% of all rental fees and customer security deposits land directly into your personal Razorpay merchant account upon checkout.
+                    <b className="text-white">Direct Payouts & Mandatory Razorpay Account:</b> 100% of all rental charges and security deposits land directly into your personal Razorpay merchant account upon customer checkout. You are solely responsible for creating and linking your own KYC-verified Razorpay merchant account.
+                  </span>
+                </div>
+
+                <div className="flex items-start gap-2">
+                  <span className="text-emerald-400 font-bold">•</span>
+                  <span>
+                    <b className="text-white">Product Liability Waiver & Hold-Harmless:</b> The Merchant warrants all listed equipment is safe, functional, and lawful. RMS acts strictly as an unmediated SaaS platform provider and bears zero liability for product defects, personal injury, property damage, equipment failure, theft, or customer disputes.
                   </span>
                 </div>
 
@@ -178,14 +185,14 @@ const Signup = () => {
                 <div className="flex items-start gap-2">
                   <span className="text-emerald-400 font-bold">•</span>
                   <span>
-                    <b className="text-white">5% Annual Royalty on Net Rent:</b> Platform royalty is strictly <b>5%</b> of your cumulative annual net rental revenue. Customer security deposits and cancelled bookings are <b>100% royalty-exempt</b>.
+                    <b className="text-white">5% Annual Royalty on Net Rent:</b> Platform royalty is strictly <b>5%</b> calculated on your cumulative annual net rental earnings at cycle end. Customer security deposits and cancelled bookings are <b>100% royalty-exempt</b>.
                   </span>
                 </div>
 
                 <div className="flex items-start gap-2">
                   <span className="text-emerald-400 font-bold">•</span>
                   <span>
-                    <b className="text-white">3-Day Operational Grace Buffer:</b> Upon reaching your anniversary renewal date, you receive a 3-day grace period to settle the 5% platform statement. If unpaid past 3 days, your storefront and inventory will be temporarily locked to prevent new customer bookings until cleared.
+                    <b className="text-white">3-Day Operational Grace Buffer:</b> Upon reaching your anniversary date, you receive a 3-day grace window to settle the 5% platform statement. Unpaid statements past 3 days temporarily lock storefront checkouts until cleared.
                   </span>
                 </div>
               </div>
@@ -199,7 +206,7 @@ const Signup = () => {
                   className="w-4 h-4 mt-0.5 rounded text-emerald-500 focus:ring-emerald-400 border-gray-400 bg-gray-800"
                 />
                 <span className="text-[11px]">
-                  I agree to the RMS Zero-Commission Direct Model, 365-Day Cycle, 5% Annual Net Royalty, and 3-Day Grace Policy.
+                  I agree to the RMS Zero-Commission Direct Model, Product Liability Waiver, Razorpay Setup Responsibility, 5% Annual Net Royalty, and 3-Day Grace Policy.
                 </span>
               </label>
             </div>

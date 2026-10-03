@@ -487,8 +487,138 @@ function generateRentalAgreementPDF({ customer, parentOrder, subOrders }) {
   });
 }
 
+/**
+ * 4. Generates Formal Vendor Merchant & Hold-Harmless Partnership Agreement PDF
+ */
+function generateVendorAgreementPDF({ vendor, acceptedAt }) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 36, size: 'A4', autoFirstPage: true });
+    const buffers = [];
+
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => resolve(Buffer.concat(buffers)));
+    doc.on('error', reject);
+
+    const primaryNavy = '#0F172A';   // Slate 900
+    const emeraldGreen = '#047857'; // Emerald 700
+    const textDark = '#1E293B';      // Slate 800
+    const textMuted = '#475569';     // Slate 600
+    const borderGray = '#CBD5E1';    // Slate 300
+    const bgLight = '#F8FAFC';       // Slate 50
+
+    // --- HEADER BAR ---
+    doc.rect(36, 36, 523, 62).fill(primaryNavy);
+    doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(12)
+      .text('VENDOR MERCHANT PARTNERSHIP AGREEMENT', 48, 46, { width: 320, lineBreak: false })
+      .fontSize(9)
+      .text('& PRODUCT LIABILITY WAIVER / SAAS LICENSING CONTRACT', 48, 60, { width: 320, lineBreak: false });
+
+    doc.fillColor('#34D399').font('Helvetica').fontSize(8)
+      .text('Official Platform Software Licensing Contract • Version 7.0', 48, 74, { width: 320, lineBreak: false });
+
+    const acceptedDateStr = new Date(acceptedAt || Date.now()).toLocaleString('en-IN', {
+      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+
+    doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(8)
+      .text(`CONTRACT ID: RMS-VND-${vendor.id || 'REG'}`, 345, 46, { width: 200, align: 'right' });
+    doc.fillColor('#CBD5E1').font('Helvetica').fontSize(7.5)
+      .text(`EXECUTED: ${acceptedDateStr}`, 345, 60, { width: 200, align: 'right' })
+      .text(`MODEL: 0% CUT DIRECT GATEWAY`, 345, 72, { width: 200, align: 'right' });
+
+    let currY = 108;
+
+    // --- MERCHANT IDENTIFICATION CARD ---
+    const merchantCardHeight = 60;
+    doc.rect(36, currY, 523, merchantCardHeight).fillAndStroke(bgLight, borderGray);
+
+    doc.fillColor(emeraldGreen).font('Helvetica-Bold').fontSize(8).text('REGISTERED MERCHANT / LESSOR', 48, currY + 8);
+    doc.fillColor(textDark).font('Helvetica-Bold').fontSize(9).text(sanitizeText(vendor.full_name) || 'Registered Merchant', 48, currY + 20, { width: 250, lineBreak: false, ellipsis: true });
+    doc.fillColor(textMuted).font('Helvetica').fontSize(7.5)
+      .text(`Email: ${sanitizeText(vendor.email) || 'N/A'}`, 48, currY + 33, { width: 250, lineBreak: false, ellipsis: true })
+      .text(`Phone: ${sanitizeText(vendor.phone) || 'N/A'}  •  City: ${sanitizeText(vendor.city) || 'N/A'}`, 48, currY + 44, { width: 250, lineBreak: false, ellipsis: true });
+
+    doc.fillColor(emeraldGreen).font('Helvetica-Bold').fontSize(8).text('SOFTWARE LICENSING CYCLE', 320, currY + 8);
+    const startDateStr = formatDate(vendor.subscription_start_date || new Date());
+    const renewalDateStr = formatDate(vendor.subscription_renewal_date || new Date(Date.now() + 365*24*60*60*1000));
+    doc.fillColor(textMuted).font('Helvetica').fontSize(7.5)
+      .text(`Cycle Start: ${startDateStr}`, 320, currY + 20)
+      .text(`Cycle Maturity: ${renewalDateStr} (365 Days)`, 320, currY + 33)
+      .text(`Royalty Rate: 5% Annual Net Rental Earnings`, 320, currY + 44);
+
+    currY += merchantCardHeight + 14;
+
+    // --- COVENANTS & LEGAL CLAUSES ---
+    doc.fillColor(primaryNavy).font('Helvetica-Bold').fontSize(9).text('TERMS, PRODUCT LIABILITY WAIVER & COVENANTS', 36, currY);
+    currY += 12;
+
+    const sections = [
+      {
+        title: '1. Software Infrastructure Provider Status & Zero-Intermediation Model',
+        body: 'Rental Management System (RMS) operates exclusively as an unmediated software technology platform provider. RMS does not take custody of equipment, does not manage physical handovers, and does not hold booking money or security deposits in central escrow. 100% of customer rental fees and security deposits land directly into the Merchant’s personal Razorpay merchant account.'
+      },
+      {
+        title: '2. Absolute Product Liability Waiver & Platform Non-Liability Release',
+        body: 'The Merchant explicitly warrants that all listed items are safe, functional, legal, and well-maintained. The Merchant releases and holds RMS, its developers, and parent entity completely harmless from any legal, civil, or financial claims arising from product defects, equipment breakdown, structural failure, personal injury, property loss, theft, customer delinquency, or hazardous usage during the rental lifecycle.'
+      },
+      {
+        title: '3. Merchant Razorpay Account Creation & Compliance Responsibility',
+        body: 'The Merchant is strictly responsible for creating, configuring, verifying (KYC), and maintaining their independent Razorpay Merchant account. RMS acts solely as a technical routing interface and bears zero liability for Razorpay account suspensions, payment holds, customer chargebacks, or bank refund disputes.'
+      },
+      {
+        title: '4. Annual 5% SaaS Licensing Royalty & 3-Day Grace Policy',
+        body: 'Monetization operates on a 5% software licensing royalty calculated on cumulative annual net rental revenue at cycle maturity (365 days). Security deposits and cancelled bookings are 100% royalty-exempt. Upon cycle maturity, the Merchant receives a 3-day grace period to settle the statement before storefront checkouts are temporarily paused.'
+      },
+      {
+        title: '5. Catalog Compliance & Administrative Taxonomy Control',
+        body: 'The Merchant warrants that all listed equipment strictly adheres to local laws and falls within public product categories created by platform administrators. RMS reserves the right to delist non-compliant assets without prior notice.'
+      }
+    ];
+
+    sections.forEach((sec) => {
+      doc.rect(36, currY, 523, 54).fillAndStroke(bgLight, borderGray);
+      doc.fillColor(emeraldGreen).font('Helvetica-Bold').fontSize(7.5).text(sec.title, 44, currY + 5);
+      doc.fillColor(textMuted).font('Helvetica').fontSize(6.8).text(sec.body, 44, currY + 16, { width: 507, lineGap: 1.2 });
+      currY += 58;
+    });
+
+    currY += 4;
+
+    // --- STEP-BY-STEP RAZORPAY MERCHANT SETUP GUIDE ---
+    doc.rect(36, currY, 523, 68).fillAndStroke('#ECFDF5', '#A7F3D0');
+    doc.fillColor('#065F46').font('Helvetica-Bold').fontSize(8)
+      .text('GUIDE: HOW TO CREATE & LINK YOUR DIRECT RAZORPAY MERCHANT ACCOUNT', 44, currY + 6);
+
+    const steps = [
+      'Step 1: Sign up for a business account at https://dashboard.razorpay.com and complete your identity/bank KYC.',
+      'Step 2: Log in to your Razorpay Dashboard, navigate to Account & Settings -> API Keys, and click "Generate Key".',
+      'Step 3: Copy your Key ID (e.g. rzp_live_XXXX) and Key Secret (stored securely in memory).',
+      'Step 4: Log in to RMS -> Vendor Dashboard -> "Payment Gateway & License" tab, enter both keys, and click Save.'
+    ];
+
+    let stepY = currY + 18;
+    steps.forEach((step) => {
+      doc.fillColor('#047857').font('Helvetica').fontSize(6.8).text(step, 44, stepY, { width: 507, lineBreak: false });
+      stepY += 11;
+    });
+
+    currY += 74;
+
+    // --- SIGNATURE & EXECUTION FOOTER ---
+    doc.rect(36, currY, 523, 34).fillAndStroke('#F1F5F9', borderGray);
+    doc.fillColor(textDark).font('Helvetica-Bold').fontSize(7.5)
+      .text('ELECTRONICALLY ACCEPTED & CERTIFIED UPON REGISTRATION', 44, currY + 6);
+    doc.fillColor(textMuted).font('Helvetica').fontSize(6.5)
+      .text(`Accepted by ${sanitizeText(vendor.full_name)} (${vendor.email}) on ${acceptedDateStr}. Valid without physical handwritten signatures pursuant to the Information Technology Act.`, 44, currY + 18, { width: 507, lineBreak: false });
+
+    doc.end();
+  });
+}
+
+
 module.exports = {
   generateCustomerInvoicePDF,
   generatePayoutSlipPDF,
   generateRentalAgreementPDF,
+  generateVendorAgreementPDF,
 };

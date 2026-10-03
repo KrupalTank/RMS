@@ -9,8 +9,6 @@ router.post('/signup',validateRequired([
     'email',
     'password',
     'phone',
-    'bank_account_no',
-    'bank_ifsc',
   ]), authController.signup);
 
 router.post('/login', validateRequired(['email', 'password']), authController.login);

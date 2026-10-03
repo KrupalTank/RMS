@@ -52,7 +52,7 @@ router.put(
 
 // Categories
 router.get('/getCategories', vendorController.getCategories);
-router.post('/addCategory', validateRequired(['name']), vendorController.addCategory);
+// router.post('/addCategory', validateRequired(['name']), vendorController.addCategory);
 
 // Orders & Handover
 router.get('/getOrders', vendorController.getVendorOrders);

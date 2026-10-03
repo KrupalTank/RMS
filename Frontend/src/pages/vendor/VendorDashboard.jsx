@@ -10,7 +10,6 @@ import {
   Plus,
   Edit3,
   Layers,
-  FolderPlus,
   RotateCcw,
   CheckCircle2,
   AlertTriangle,
@@ -107,6 +106,7 @@ const VendorDashboard = () => {
   });
 
   const displayedCoupons = couponSubTab === 'active' ? activeCoupons : completedCoupons;
+
   // Chat Data States
   const [conversations, setConversations] = useState([]);
   const [selectedConv, setSelectedConv] = useState(null);
@@ -119,13 +119,11 @@ const VendorDashboard = () => {
   const [showProductModal, setShowProductModal] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editingProductId, setEditingProductId] = useState(null);
-  const [showCategoryModal, setShowCategoryModal] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState('');
 
   const [handoverModalOrder, setHandoverModalOrder] = useState(null);
   const [enteredOtp, setEnteredOtp] = useState('');
   const [verifyingOtp, setVerifyingOtp] = useState(false);
-  const [assetSerial, setAssetSerial] = useState(''); // Optional Asset Tag/Serial
+  const [assetSerial, setAssetSerial] = useState('');
 
   // Product Form State
   const initialFormState = {
@@ -150,7 +148,7 @@ const VendorDashboard = () => {
   // Return Inspection Modal State
   const [inspectingOrder, setInspectingOrder] = useState(null);
   const [productCondition, setProductCondition] = useState('Good');
-  const [refundMethod, setRefundMethod] = useState('razorpay_api'); // 'razorpay_api' | 'offline'
+  const [refundMethod, setRefundMethod] = useState('razorpay_api');
   const [offlineReference, setOfflineReference] = useState('');
   const [orderActionLoading, setOrderActionLoading] = useState(false);
 
@@ -162,7 +160,6 @@ const VendorDashboard = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  // Helper: load Razorpay checkout script dynamically
   const loadRazorpayScript = () => {
     return new Promise((resolve) => {
       if (window.Razorpay) {
@@ -177,7 +174,7 @@ const VendorDashboard = () => {
     });
   };
 
-  // 1. Fetch initial vendor inventory, orders, coupons, gateway status, and annual billing
+  // Fetch initial vendor data
   const fetchData = async () => {
     setLoading(true);
     setBanner({ success: '', error: '' });
@@ -213,7 +210,6 @@ const VendorDashboard = () => {
     }
   };
 
-  // 2. Fetch Chat Conversations
   const fetchConversations = async () => {
     try {
       const res = await api.get('/chat/myConversations');
@@ -225,7 +221,6 @@ const VendorDashboard = () => {
     }
   };
 
-  // 3. Fetch Messages for Selected Conversation
   const loadMessages = async (convId) => {
     setChatLoading(true);
     try {
@@ -244,7 +239,6 @@ const VendorDashboard = () => {
     }
   };
 
-  // Initialize socket and data
   useEffect(() => {
     fetchData();
     fetchConversations();
@@ -276,7 +270,6 @@ const VendorDashboard = () => {
     };
   }, [user]);
 
-  // Handle room joining when selected conversation changes
   useEffect(() => {
     if (selectedConv && socketRef.current) {
       loadMessages(selectedConv.id);
@@ -301,7 +294,6 @@ const VendorDashboard = () => {
     setSelectedConv(conv);
   };
 
-  // Send Message Handler
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!chatInput.trim() || !selectedConv || sendingMessage) return;
@@ -325,7 +317,6 @@ const VendorDashboard = () => {
     }
   };
 
-  // Open Chat from Order Card
   const handleOpenOrderChat = async (ord) => {
     try {
       const res = await api.post('/chat/getOrCreateConversation', {
@@ -344,7 +335,6 @@ const VendorDashboard = () => {
     }
   };
 
-  // Handshake PIN verification with optional serial tag
   const handleVerifyOtpSubmit = async (e) => {
     e.preventDefault();
     if (!enteredOtp || enteredOtp.trim().length !== 6) {
@@ -374,7 +364,6 @@ const VendorDashboard = () => {
     }
   };
 
-  // Save Gateway Credentials
   const handleSaveGateway = async (e) => {
     e.preventDefault();
     if (!gatewayForm.razorpay_key_id.trim() || !gatewayForm.razorpay_key_secret.trim()) {
@@ -400,7 +389,6 @@ const VendorDashboard = () => {
     }
   };
 
-  // Pay 5% Annual SaaS Royalty Bill
   const handlePayAnnualBill = async (billingId) => {
     setPayingBill(true);
     try {
@@ -472,7 +460,6 @@ const VendorDashboard = () => {
     }
   };
 
-  // Create Store Coupon
   const handleCreateCoupon = async (e) => {
     e.preventDefault();
     if (!couponForm.code.trim() || !couponForm.discount_value) {
@@ -543,7 +530,6 @@ const VendorDashboard = () => {
     }
   };
 
-  // Product Modals & Handlers
   const handleOpenAddModal = () => {
     if (annualBillingState.pendingBill) {
       alert('License Expired: Please settle your pending 5% annual royalty bill under "Payment Gateway & License" before adding new inventory.');
@@ -685,22 +671,6 @@ const VendorDashboard = () => {
     }
   };
 
-  const handleAddCategory = async (e) => {
-    e.preventDefault();
-    if (!newCategoryName.trim()) return;
-    try {
-      const res = await api.post('/vendor/addCategory', { name: newCategoryName.trim() });
-      if (res.data.success) {
-        setCategories((prev) => [...prev, res.data.category]);
-        setFormData((prev) => ({ ...prev, category_id: res.data.category.id }));
-        setNewCategoryName('');
-        setShowCategoryModal(false);
-      }
-    } catch (err) {
-      alert(err.response?.data?.message || 'Failed to add category.');
-    }
-  };
-
   const handleCancelOrder = async (orderId) => {
     if (!window.confirm('Cancel this booking before delivery? A 100% refund will be issued to the customer.'))
       return;
@@ -768,11 +738,6 @@ const VendorDashboard = () => {
     0
   );
 
-  const isRenewalDue =
-    annualBillingState.pendingBill ||
-    (gatewayStatus.subscription_renewal_date &&
-      new Date(gatewayStatus.subscription_renewal_date) <= new Date());
-
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
       {/* Top Header */}
@@ -789,12 +754,6 @@ const VendorDashboard = () => {
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setShowCategoryModal(true)}
-            className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-semibold rounded-lg transition"
-          >
-            <FolderPlus className="w-4 h-4" /> Add Category
-          </button>
-          <button
             onClick={handleOpenAddModal}
             className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm transition"
           >
@@ -810,7 +769,6 @@ const VendorDashboard = () => {
         const now = new Date();
         const renewalDate = new Date(gatewayStatus.subscription_renewal_date);
         
-        // Calculate grace period expiration (period_end + 3 days)
         const graceEndDate = new Date(renewalDate);
         graceEndDate.setDate(graceEndDate.getDate() + 3);
 
@@ -877,7 +835,6 @@ const VendorDashboard = () => {
         return null;
       })()}
 
-      {/* Gateway Alert if not configured */}
       {!gatewayStatus.isConfigured && (
         <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between text-amber-800 text-xs">
           <div className="flex items-center gap-2">
@@ -895,7 +852,6 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* Status Notifications */}
       {banner.success && (
         <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2 text-xs text-emerald-800">
           <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
@@ -1084,7 +1040,7 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* TAB 2: ORDERS & RETURN INSPECTION */}
+      {/* TAB 2: ORDERS */}
       {activeTab === 'orders' && (
         <div className="space-y-4">
           {orders.length === 0 ? (
@@ -1213,10 +1169,9 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* TAB 3: PROMOTIONS & STORE COUPONS */}
+      {/* TAB 3: PROMOTIONS */}
       {activeTab === 'coupons' && (
         <div className="space-y-4">
-          {/* Header Card */}
           <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
             <div>
               <h2 className="text-sm font-bold text-gray-900">Your Store Promotional Campaigns</h2>
@@ -1232,7 +1187,6 @@ const VendorDashboard = () => {
             </button>
           </div>
 
-          {/* Sub-Tab Switcher */}
           <div className="flex items-center gap-2 border-b border-gray-200 pb-2 text-xs font-bold">
             <button
               type="button"
@@ -1273,7 +1227,6 @@ const VendorDashboard = () => {
             </button>
           </div>
 
-          {/* Empty State vs Card Grid */}
           {displayedCoupons.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-gray-200 space-y-2">
               <Tag className="w-10 h-10 text-gray-300 mx-auto" />
@@ -1396,11 +1349,10 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* TAB 4: PAYMENT GATEWAY & SAAS LICENSE SETTINGS */}
+      {/* TAB 4: GATEWAY & LICENSE */}
       {activeTab === 'gateway' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Razorpay Key Settings Form */}
             <div className="lg:col-span-7 bg-white p-6 rounded-2xl border border-gray-200 shadow-sm space-y-4">
               <div className="flex items-center gap-2 border-b border-gray-100 pb-3">
                 <CreditCard className="w-5 h-5 text-emerald-600" />
@@ -1461,7 +1413,6 @@ const VendorDashboard = () => {
               </form>
             </div>
 
-            {/* Annual SaaS Licensing Details */}
             <div className="lg:col-span-5 bg-gradient-to-br from-gray-900 to-slate-800 text-white p-6 rounded-2xl shadow-sm space-y-4 flex flex-col justify-between">
               <div className="space-y-3 text-xs">
                 <div className="flex items-center gap-2 border-b border-white/10 pb-3">
@@ -1534,7 +1485,6 @@ const VendorDashboard = () => {
             </div>
           </div>
 
-          {/* Annual Billing Invoices History */}
           <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-4">
             <h3 className="text-sm font-extrabold text-gray-900 flex items-center gap-2">
               <Receipt className="w-4 h-4 text-emerald-600" />
@@ -1597,10 +1547,9 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* TAB 5: MESSAGES & CHAT */}
+      {/* TAB 5: MESSAGES */}
       {activeTab === 'messages' && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden flex flex-col lg:grid lg:grid-cols-12 min-h-[620px] max-h-[85vh]">
-          {/* Left Pane: Conversation Threads */}
           <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-gray-200 flex flex-col h-64 lg:h-full bg-gray-50/50 min-w-0">
             <div className="p-3.5 border-b border-gray-200 bg-white flex-shrink-0">
               <h2 className="text-sm font-extrabold text-gray-900 flex items-center gap-2">
@@ -1674,7 +1623,6 @@ const VendorDashboard = () => {
             </div>
           </div>
 
-          {/* Right Pane: Active Chat Window */}
           <div className="lg:col-span-8 flex flex-col flex-1 min-h-[420px] lg:h-full bg-white min-w-0">
             {selectedConv ? (
               <>
@@ -2017,45 +1965,6 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* MODAL: ADD CATEGORY */}
-      {showCategoryModal && (
-        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white max-w-sm w-full rounded-xl shadow-xl border border-gray-200 p-5 space-y-4">
-            <div className="flex justify-between items-center border-b border-gray-100 pb-2">
-              <h3 className="text-sm font-bold text-gray-900">Add New Category</h3>
-              <button onClick={() => setShowCategoryModal(false)} className="text-gray-400 hover:text-gray-600">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <form onSubmit={handleAddCategory} className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1">Category Name</label>
-                <input
-                  type="text"
-                  required
-                  value={newCategoryName}
-                  onChange={(e) => setNewCategoryName(e.target.value)}
-                  placeholder="e.g. Drones, Lighting, Audio"
-                  className="w-full text-xs p-2 border border-gray-300 rounded focus:ring-emerald-500"
-                />
-              </div>
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowCategoryModal(false)}
-                  className="px-3 py-1.5 border border-gray-300 rounded text-xs text-gray-700"
-                >
-                  Cancel
-                </button>
-                <button type="submit" className="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs font-bold">
-                  Save Category
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
       {/* MODAL: CREATE STORE PROMO COUPON */}
       {showCouponModal && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
@@ -2215,7 +2124,7 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* MODAL: RETURN INSPECTION & DIRECT DEPOSIT SETTLEMENT */}
+      {/* MODAL: RETURN INSPECTION */}
       {inspectingOrder && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white max-w-md w-full rounded-2xl shadow-xl border border-gray-200 p-6 space-y-4">
@@ -2330,7 +2239,7 @@ const VendorDashboard = () => {
         </div>
       )}
 
-      {/* MODAL: VERIFY HANDOVER OTP & OPTIONAL ASSET TAG */}
+      {/* MODAL: VERIFY HANDOVER OTP */}
       {handoverModalOrder && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white max-w-sm w-full rounded-2xl shadow-xl border border-gray-100 p-6 space-y-4">
