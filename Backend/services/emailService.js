@@ -223,22 +223,41 @@ async function sendWelcomeEmail({ user }) {
     const isVendor = user?.role === 'vendor';
     const roleText = (user?.role || 'customer').toUpperCase();
 
+    // Format cycle dates for vendor registration notice
+    const startDate = user?.subscription_start_date
+      ? new Date(user.subscription_start_date).toLocaleDateString('en-IN')
+      : new Date().toLocaleDateString('en-IN');
+
+    const renewalDate = user?.subscription_renewal_date
+      ? new Date(user.subscription_renewal_date).toLocaleDateString('en-IN')
+      : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toLocaleDateString('en-IN');
+
+    const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+
     const mailOptions = {
       from: process.env.EMAIL_FROM,
       to: user.email,
       subject: isVendor
-        ? 'Welcome Vendor Partner - RMS Partnership & Commission Agreement'
+        ? 'Welcome Vendor Partner - RMS 0% Cut & Annual Licensing Agreement'
         : 'Welcome to RMS - Account Created Successfully!',
       html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 24px; background-color: #ffffff;">
-          <h2 style="color: ${isVendor ? '#059669' : '#2563EB'}; margin-top: 0;">
-            ${isVendor ? 'Welcome to RMS Vendor Partner Network' : `Welcome to Rental Management System, ${user.full_name || 'Member'}!`}
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1F2937; max-width: 600px; margin: 0 auto; border: 1px solid #E5E7EB; border-radius: 12px; padding: 28px; background-color: #ffffff;">
+          <h2 style="color: ${isVendor ? '#059669' : '#2563EB'}; margin-top: 0; font-size: 20px;">
+            ${isVendor ? 'Welcome to RMS Merchant Partner Network!' : `Welcome to Rental Management System, ${user.full_name || 'Member'}!`}
           </h2>
-          <p>Your account has been registered successfully. You can now ${isVendor ? 'list products in the catalog and manage bookings' : 'explore rental equipment'}.</p>
           
-          <div style="background-color: #F3F4F6; padding: 15px; border-radius: 6px; margin: 20px 0; border: 1px solid #E5E7EB; font-size: 13px;">
+          <p style="font-size: 14px; margin-bottom: 20px;">
+            ${
+              isVendor
+                ? 'Your store account has been successfully initialized under the <b>Zero-Intermediation Merchant Model</b>. You retain direct control over your transactions and inventory.'
+                : 'Your account has been registered successfully. You can now explore verified equipment, check live 60-day availability, and place rental bookings.'
+            }
+          </p>
+          
+          <!-- User Details Snapshot -->
+          <div style="background-color: #F8FAFC; padding: 16px; border-radius: 8px; margin: 20px 0; border: 1px solid #E2E8F0; font-size: 13px;">
             <p style="margin: 4px 0;"><b>Registered Name:</b> ${user.full_name}</p>
-            <p style="margin: 4px 0;"><b>Account Role:</b> ${roleText}</p>
+            <p style="margin: 4px 0;"><b>Account Role:</b> <span style="display: inline-block; padding: 2px 8px; background-color: #E2E8F0; border-radius: 4px; font-weight: bold;">${roleText}</span></p>
             <p style="margin: 4px 0;"><b>Registered Email:</b> ${user.email}</p>
             <p style="margin: 4px 0;"><b>City:</b> ${user.city || 'N/A'}</p>
           </div>
@@ -246,18 +265,45 @@ async function sendWelcomeEmail({ user }) {
           ${
             isVendor
               ? `
-          <div style="background-color: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 6px; padding: 16px; margin: 20px 0;">
-            <h4 style="margin: 0 0 8px 0; color: #065F46; font-size: 14px;">📜 Partner Software & Annual Licensing Agreement</h4>
-            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>Direct Customer Payments:</b> 100% of customer rental fees and security deposits land directly into your own Razorpay account instantly.</p>
-            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>0% Per-Order Commission:</b> The platform never takes transaction cuts from individual bookings.</p>
-            <p style="margin: 4px 0; font-size: 12px; color: #047857;">• <b>5% Annual Platform Royalty:</b> Billed annually based on your cumulative net rental earnings.</p>
+          <!-- Vendor Comprehensive Policy Box -->
+          <div style="background-color: #0F172A; border: 1px solid #10B981; border-radius: 8px; padding: 20px; margin: 24px 0; color: #F1F5F9;">
+            <h3 style="margin: 0 0 12px 0; color: #34D399; font-size: 15px; display: flex; align-items: center;">
+              📜 Vendor Zero-Commission & Annual SaaS Licensing Terms
+            </h3>
+            
+            <ul style="padding-left: 18px; margin: 0; font-size: 12px; color: #CBD5E1; line-height: 1.8;">
+              <li style="margin-bottom: 8px;">
+                <b style="color: #FFFFFF;">0% Per-Order Cut:</b> 100% of all rental charges and security deposits land immediately into your own connected Razorpay account upon customer checkout.
+              </li>
+              <li style="margin-bottom: 8px;">
+                <b style="color: #FFFFFF;">365-Day Subscription Cycle:</b> Your annual cycle begins today (<b>${startDate}</b>) and concludes on your anniversary renewal date (<b>${renewalDate}</b>).
+              </li>
+              <li style="margin-bottom: 8px;">
+                <b style="color: #FFFFFF;">5% Annual Platform Royalty:</b> Settle a flat 5% platform fee on your cumulative net rental revenue at cycle maturity. <b>Security deposits and cancelled bookings are 100% royalty-exempt</b>.
+              </li>
+              <li style="margin-bottom: 8px;">
+                <b style="color: #FFFFFF;">3-Day Operational Grace Buffer:</b> After your 1-year mark, you receive a 3-day grace period to settle the statement. If unpaid past 3 days, new customer bookings and product updates are paused until settled.
+              </li>
+            </ul>
+          </div>
+
+          <!-- Next Step Action -->
+          <div style="background-color: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 8px; padding: 14px; margin: 20px 0; font-size: 13px; color: #065F46;">
+            <b>Next Step:</b> Log in to your <a href="${clientUrl}/vendor/dashboard" style="color: #059669; font-weight: bold; text-decoration: underline;">Vendor Hub</a>, navigate to <b>Payment Gateway & License</b>, and save your direct Razorpay Key ID and Secret to activate your equipment listings.
           </div>
           `
-              : '<p style="font-size: 13px; color: #4B5563;">Complete your KYC verification in your profile to enjoy lower security deposit requirements.</p>'
+              : `
+          <!-- Customer Tip -->
+          <div style="background-color: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 8px; padding: 14px; margin: 20px 0; font-size: 13px; color: #1E40AF;">
+            💡 <b>Save on Security Deposits:</b> Complete identity verification under your profile to unlock lower, verified deposit tiers across all catalog gear.
+          </div>
+          `
           }
           
-          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 20px 0;" />
-          <p style="font-size: 12px; color: #6B7280; text-align: center;">Rental Management System Team</p>
+          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
+          <p style="font-size: 12px; color: #9CA3AF; text-align: center; margin-bottom: 0;">
+            Rental Management System (RMS) Enterprise Platform
+          </p>
         </div>
       `,
     };

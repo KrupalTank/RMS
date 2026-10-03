@@ -142,10 +142,30 @@ exports.getProducts = async (req, res) => {
     const userCity = req.user.city || '';
 
     const query = `
-      SELECT p.*, c.name AS category_name, u.city AS vendor_city, u.address AS vendor_address, u.phone AS vendor_phone
+      SELECT p.*, c.name AS category_name, u.city AS vendor_city, u.address AS vendor_address, u.phone AS vendor_phone,
+             COALESCE(sc_agg.available_coupons, '[]'::json) AS store_coupons
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
       JOIN users u ON p.vendor_id = u.id
+      LEFT JOIN LATERAL (
+        SELECT json_agg(
+          json_build_object(
+            'id', sc.id,
+            'code', sc.code,
+            'discount_type', sc.discount_type,
+            'discount_value', sc.discount_value,
+            'max_discount_amount', sc.max_discount_amount,
+            'min_order_amount', sc.min_order_amount,
+            'min_rental_days', sc.min_rental_days
+          ) ORDER BY sc.discount_value DESC
+        ) AS available_coupons
+        FROM store_coupons sc
+        WHERE sc.vendor_id = p.vendor_id
+          AND sc.is_active = TRUE
+          AND sc.is_archived = FALSE
+          AND (sc.valid_until IS NULL OR sc.valid_until::DATE >= CURRENT_DATE)
+          AND (sc.max_uses IS NULL OR sc.used_count < sc.max_uses)
+      ) sc_agg ON TRUE
       WHERE p.total_quantity > 0
         AND u.is_blocked = FALSE
         AND (
@@ -154,7 +174,7 @@ exports.getProducts = async (req, res) => {
             SELECT 1 FROM vendor_annual_billing vab 
             WHERE vab.vendor_id = u.id 
               AND vab.payment_status IN ('PENDING', 'OVERDUE') 
-              AND CURRENT_DATE > (vab.period_end + INTERVAL '3 days')
+              AND CURRENT_DATE >= (vab.period_end + INTERVAL '3 days')
           )
         )
         AND u.razorpay_key_id IS NOT NULL
@@ -177,10 +197,30 @@ exports.getProductsByCategory = async (req, res) => {
     const userCity = req.user.city || '';
 
     const query = `
-      SELECT p.*, c.name AS category_name, u.city AS vendor_city, u.address AS vendor_address, u.phone AS vendor_phone
+      SELECT p.*, c.name AS category_name, u.city AS vendor_city, u.address AS vendor_address, u.phone AS vendor_phone,
+             COALESCE(sc_agg.available_coupons, '[]'::json) AS store_coupons
       FROM products p
       JOIN categories c ON p.category_id = c.id
       JOIN users u ON p.vendor_id = u.id
+      LEFT JOIN LATERAL (
+        SELECT json_agg(
+          json_build_object(
+            'id', sc.id,
+            'code', sc.code,
+            'discount_type', sc.discount_type,
+            'discount_value', sc.discount_value,
+            'max_discount_amount', sc.max_discount_amount,
+            'min_order_amount', sc.min_order_amount,
+            'min_rental_days', sc.min_rental_days
+          ) ORDER BY sc.discount_value DESC
+        ) AS available_coupons
+        FROM store_coupons sc
+        WHERE sc.vendor_id = p.vendor_id
+          AND sc.is_active = TRUE
+          AND sc.is_archived = FALSE
+          AND (sc.valid_until IS NULL OR sc.valid_until::DATE >= CURRENT_DATE)
+          AND (sc.max_uses IS NULL OR sc.used_count < sc.max_uses)
+      ) sc_agg ON TRUE
       WHERE (LOWER(c.name) = LOWER($1) OR c.id::TEXT = $1)
         AND p.total_quantity > 0
         AND u.is_blocked = FALSE
@@ -190,7 +230,7 @@ exports.getProductsByCategory = async (req, res) => {
             SELECT 1 FROM vendor_annual_billing vab 
             WHERE vab.vendor_id = u.id 
               AND vab.payment_status IN ('PENDING', 'OVERDUE') 
-              AND CURRENT_DATE > (vab.period_end + INTERVAL '3 days')
+              AND CURRENT_DATE >= (vab.period_end + INTERVAL '3 days')
           )
         )
         AND u.razorpay_key_id IS NOT NULL
@@ -213,10 +253,30 @@ exports.searchProducts = async (req, res) => {
     const userCity = req.user.city || '';
 
     const query = `
-      SELECT p.*, p.cancellation_fee, c.name AS category_name, u.city AS vendor_city, u.address AS vendor_address, u.phone AS vendor_phone
+      SELECT p.*, p.cancellation_fee, c.name AS category_name, u.city AS vendor_city, u.address AS vendor_address, u.phone AS vendor_phone,
+             COALESCE(sc_agg.available_coupons, '[]'::json) AS store_coupons
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
       JOIN users u ON p.vendor_id = u.id
+      LEFT JOIN LATERAL (
+        SELECT json_agg(
+          json_build_object(
+            'id', sc.id,
+            'code', sc.code,
+            'discount_type', sc.discount_type,
+            'discount_value', sc.discount_value,
+            'max_discount_amount', sc.max_discount_amount,
+            'min_order_amount', sc.min_order_amount,
+            'min_rental_days', sc.min_rental_days
+          ) ORDER BY sc.discount_value DESC
+        ) AS available_coupons
+        FROM store_coupons sc
+        WHERE sc.vendor_id = p.vendor_id
+          AND sc.is_active = TRUE
+          AND sc.is_archived = FALSE
+          AND (sc.valid_until IS NULL OR sc.valid_until::DATE >= CURRENT_DATE)
+          AND (sc.max_uses IS NULL OR sc.used_count < sc.max_uses)
+      ) sc_agg ON TRUE
       WHERE (p.title ILIKE $1 OR p.description ILIKE $1)
         AND p.total_quantity > 0
         AND u.is_blocked = FALSE
@@ -226,7 +286,7 @@ exports.searchProducts = async (req, res) => {
             SELECT 1 FROM vendor_annual_billing vab 
             WHERE vab.vendor_id = u.id 
               AND vab.payment_status IN ('PENDING', 'OVERDUE') 
-              AND CURRENT_DATE > (vab.period_end + INTERVAL '3 days')
+              AND CURRENT_DATE >= (vab.period_end + INTERVAL '3 days')
           )
         )
         AND u.razorpay_key_id IS NOT NULL

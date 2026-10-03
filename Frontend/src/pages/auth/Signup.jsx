@@ -13,8 +13,6 @@ const Signup = () => {
     role: 'customer',
     city: '',
     phone: '',
-    bank_account_no: '',
-    bank_ifsc: '',
   });
   const [agreedToVendorTerms, setAgreedToVendorTerms] = useState(false);
   const [error, setError] = useState('');
@@ -31,7 +29,7 @@ const Signup = () => {
     setError('');
 
     if (formData.role === 'vendor' && !agreedToVendorTerms) {
-      setError('You must review and accept the 10% Platform Commission Policy to register as a Vendor.');
+      setError('You must review and accept the Annual RMS Licensing & Zero-Commission Policy to register as a Vendor.');
       return;
     }
 
@@ -154,52 +152,55 @@ const Signup = () => {
             />
           </div>
 
-          {/* Bank details for payouts */}
-          <div className="pt-2 border-t border-gray-100">
-            <p className="text-xs text-gray-500 mb-2 font-medium">Bank Information (For automated payouts & refunds)</p>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <input
-                  type="text"
-                  name="bank_account_no"
-                  value={formData.bank_account_no}
-                  onChange={handleChange}
-                  placeholder="Bank Account No."
-                  className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                />
-              </div>
-              <div>
-                <input
-                  type="text"
-                  name="bank_ifsc"
-                  value={formData.bank_ifsc}
-                  onChange={handleChange}
-                  placeholder="IFSC Code"
-                  className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Vendor Mandatory Commission Agreement */}
+          {/* Vendor Mandatory Annual Licensing & 0% Per-Order Commission Agreement */}
           {formData.role === 'vendor' && (
-            <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-200 text-xs text-emerald-900 space-y-2.5">
-              <div className="flex items-center gap-1.5 font-bold text-emerald-950">
-                <ShieldCheck className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-                <span>RMS Vendor Partner & Commission Agreement</span>
+            <div className="bg-slate-900 text-white p-4 sm:p-5 rounded-2xl border border-emerald-500/40 text-xs space-y-3 shadow-sm">
+              <div className="flex items-center gap-2 font-bold text-emerald-400 border-b border-white/10 pb-2">
+                <ShieldCheck className="w-5 h-5 text-emerald-400 flex-shrink-0" />
+                <span className="text-sm font-black">RMS Zero-Intermediation & Licensing Agreement</span>
               </div>
-              <p className="text-[11px] text-emerald-800 leading-relaxed">
-                By registering as a Vendor on RMS, you agree that a fixed <b>10% platform commission fee</b> is deducted from gross rental income upon product handover. Security deposits are non-commissionable (100% held in escrow for repair/damage protection).
-              </p>
-              <label className="flex items-center gap-2 pt-1 font-semibold text-emerald-950 cursor-pointer">
+
+              <div className="space-y-2 text-[11px] text-gray-300 leading-relaxed">
+                <div className="flex items-start gap-2">
+                  <span className="text-emerald-400 font-bold">•</span>
+                  <span>
+                    <b className="text-white">Direct-to-Vendor Payouts (0% Per-Order Cut):</b> 100% of all rental fees and customer security deposits land directly into your personal Razorpay merchant account upon checkout.
+                  </span>
+                </div>
+
+                <div className="flex items-start gap-2">
+                  <span className="text-emerald-400 font-bold">•</span>
+                  <span>
+                    <b className="text-white">Annual 365-Day Subscription Cycle:</b> Your software licensing cycle activates today and runs for exactly 1 full calendar year (365 days).
+                  </span>
+                </div>
+
+                <div className="flex items-start gap-2">
+                  <span className="text-emerald-400 font-bold">•</span>
+                  <span>
+                    <b className="text-white">5% Annual Royalty on Net Rent:</b> Platform royalty is strictly <b>5%</b> of your cumulative annual net rental revenue. Customer security deposits and cancelled bookings are <b>100% royalty-exempt</b>.
+                  </span>
+                </div>
+
+                <div className="flex items-start gap-2">
+                  <span className="text-emerald-400 font-bold">•</span>
+                  <span>
+                    <b className="text-white">3-Day Operational Grace Buffer:</b> Upon reaching your anniversary renewal date, you receive a 3-day grace period to settle the 5% platform statement. If unpaid past 3 days, your storefront and inventory will be temporarily locked to prevent new customer bookings until cleared.
+                  </span>
+                </div>
+              </div>
+
+              <label className="flex items-start gap-2.5 pt-2 border-t border-white/10 font-semibold text-emerald-300 cursor-pointer select-none">
                 <input
                   type="checkbox"
                   required
                   checked={agreedToVendorTerms}
                   onChange={(e) => setAgreedToVendorTerms(e.target.checked)}
-                  className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 border-gray-300"
+                  className="w-4 h-4 mt-0.5 rounded text-emerald-500 focus:ring-emerald-400 border-gray-400 bg-gray-800"
                 />
-                <span>I understand and agree to the 10% Platform Commission Policy</span>
+                <span className="text-[11px]">
+                  I agree to the RMS Zero-Commission Direct Model, 365-Day Cycle, 5% Annual Net Royalty, and 3-Day Grace Policy.
+                </span>
               </label>
             </div>
           )}

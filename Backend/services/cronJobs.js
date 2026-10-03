@@ -253,7 +253,7 @@ function initCronJobs() {
     }
   });
 
-  // Cron Job 2: Daily at 9:00 PM IST (21:00) - Reconcile Overdue Lost Orders[cite: 14]
+  // Cron Job 2: Daily at 9:00 PM IST (21:00) - Reconcile Overdue Lost Orders
   cron.schedule(
     '0 21 * * *',
     async () => {

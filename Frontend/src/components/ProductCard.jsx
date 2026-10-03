@@ -1,9 +1,8 @@
-// src/components/ProductCard.jsx
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getEffectiveDeposit } from '../utils/pricingHelper';
-import { MapPin, ShieldCheck, ShieldAlert, ArrowRight, Store } from 'lucide-react';
+import { MapPin, ShieldCheck, ShieldAlert, ArrowRight, Store, Tag } from 'lucide-react';
 import { parseProductImages } from '../utils/imageHelper';
 
 const ProductCard = ({ product }) => {
@@ -23,21 +22,47 @@ const ProductCard = ({ product }) => {
     product.vendor_city &&
     user.city.toLowerCase() === product.vendor_city.toLowerCase();
 
+  // Parse attached store coupons
+  const coupons = Array.isArray(product.store_coupons)
+    ? product.store_coupons
+    : typeof product.store_coupons === 'string'
+    ? JSON.parse(product.store_coupons || '[]')
+    : [];
+
+  const bestCoupon = coupons.length > 0 ? coupons[0] : null;
+  const additionalOffersCount = coupons.length - 1;
+
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm hover:shadow-md transition flex flex-col justify-between">
       <div>
-        {/* Product Image & Stock / City Badges */}
+        {/* Product Image & Badges */}
         <div className="relative h-48 w-full bg-gray-100 overflow-hidden">
           <img
             src={primaryImage}
             alt={product.title}
             className="w-full h-full object-cover hover:scale-105 transition duration-300"
           />
+
+          {/* Top Left: Locality Badge */}
           {isLocalCity && (
-            <span className="absolute top-2 left-2 bg-emerald-600 text-white text-xs font-semibold px-2.5 py-1 rounded-full shadow flex items-center gap-1">
+            <span className="absolute top-2 left-2 bg-emerald-600 text-white text-xs font-semibold px-2.5 py-1 rounded-full shadow flex items-center gap-1 z-10">
               <MapPin className="w-3 h-3" /> Same City ({product.vendor_city})
             </span>
           )}
+
+          {/* Top Right / Image Overlay: Best Offer Callout Badge */}
+          {bestCoupon && (
+            <span className="absolute top-2 right-2 bg-emerald-700/95 text-white text-[11px] font-black px-2.5 py-0.5 rounded-full shadow-md backdrop-blur-xs flex items-center gap-1 border border-emerald-400/30 z-10">
+              <Tag className="w-3 h-3 text-emerald-200" />
+              <span>
+                {bestCoupon.discount_type === 'FLAT'
+                  ? `₹${parseFloat(bestCoupon.discount_value)} OFF`
+                  : `${parseFloat(bestCoupon.discount_value)}% OFF`}
+              </span>
+            </span>
+          )}
+
+          {/* Bottom Right: Stock Badge */}
           <span className="absolute bottom-2 right-2 bg-gray-900/80 text-white text-xs font-medium px-2 py-0.5 rounded backdrop-blur-sm">
             Stock: {product.total_quantity}
           </span>
@@ -58,7 +83,7 @@ const ProductCard = ({ product }) => {
             {product.title}
           </h3>
 
-          {/* Explicit Store Label to prevent single-vendor checkout surprises */}
+          {/* Explicit Store Label */}
           {product.vendor_name && (
             <p className="text-[11px] text-gray-500 flex items-center gap-1 mb-2">
               <Store className="w-3 h-3 text-gray-400" />
@@ -69,6 +94,28 @@ const ProductCard = ({ product }) => {
           <p className="text-xs text-gray-600 line-clamp-2 mb-3">
             {product.description || 'No description available.'}
           </p>
+
+          {/* Dynamic Store Offers Teaser Strip */}
+          {bestCoupon && (
+            <div className="mb-2.5 px-2.5 py-1.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between text-xs">
+              <div className="flex items-center gap-1.5 overflow-hidden">
+                <Tag className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                <span className="font-mono font-bold text-emerald-800 text-[11px] truncate">
+                  Use {bestCoupon.code}
+                </span>
+                <span className="text-[10px] text-emerald-700 font-semibold bg-emerald-100/80 px-1 rounded flex-shrink-0">
+                  {bestCoupon.discount_type === 'FLAT'
+                    ? `₹${parseFloat(bestCoupon.discount_value)} Flat`
+                    : `${parseFloat(bestCoupon.discount_value)}%`}
+                </span>
+              </div>
+              {additionalOffersCount > 0 && (
+                <span className="text-[10px] font-bold text-emerald-700 bg-white border border-emerald-300 px-1.5 py-0.5 rounded-full flex-shrink-0">
+                  +{additionalOffersCount} more
+                </span>
+              )}
+            </div>
+          )}
 
           {/* Pricing Box */}
           <div className="bg-gray-50 p-2.5 rounded-lg border border-gray-100 space-y-1.5 mb-2">

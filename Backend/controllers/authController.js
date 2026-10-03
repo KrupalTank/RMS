@@ -17,18 +17,16 @@ exports.signup = async (req, res) => {
       address,
       city,
       pincode,
-      bank_account_no,
-      bank_ifsc,
     } = req.body;
 
-    if (!full_name || !email || !phone || !password || !bank_account_no || !bank_ifsc) {
+    if (!full_name || !email || !phone || !password) {
       return res.status(400).json({ success: false, message: 'Please provide all required fields.' });
     }
 
     // Check if email or phone already exists
     const existingUser = await pool.query(
       'SELECT id FROM users WHERE email = $1 OR phone = $2',
-      [email, phone]
+      [email.toLowerCase().trim(), phone.trim()]
     );
 
     if (existingUser.rows.length > 0) {
@@ -40,12 +38,23 @@ exports.signup = async (req, res) => {
     const password_hash = await bcrypt.hash(password, salt);
 
     // Insert user into database
+    // For vendors: subscription_start_date & subscription_renewal_date use schema defaults (today and +1 year)
+    // For customers: dates are set to NULL
     const newUser = await pool.query(
       `INSERT INTO users 
-        (full_name, email, phone, password_hash, role, address, city, pincode, bank_account_no, bank_ifsc) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
-       RETURNING id, full_name, email, phone, role, kyc_status, city`,
-      [full_name, email, phone, password_hash, role, address, city, pincode, bank_account_no, bank_ifsc]
+        (
+          full_name, email, phone, password_hash, role, 
+          address, city, pincode,
+          subscription_start_date, subscription_renewal_date
+        ) 
+       VALUES (
+         $1, $2, $3, $4, $5, $6, $7, $8,
+         CASE WHEN $5 = 'vendor' THEN CURRENT_DATE ELSE NULL END,
+         CASE WHEN $5 = 'vendor' THEN (CURRENT_DATE + INTERVAL '1 year')::DATE ELSE NULL END
+       ) 
+       RETURNING id, full_name, email, phone, role, kyc_status, city, 
+                 subscription_start_date, subscription_renewal_date`,
+      [full_name.trim(), email.toLowerCase().trim(), phone.trim(), password_hash, role, address || null, city || null, pincode || null]
     );
 
     const user = newUser.rows[0];
@@ -72,10 +81,10 @@ exports.signup = async (req, res) => {
     const io = req.app.get('socketio');
     if (io) {
       io.emit('USER_REGISTERED', {
-        userId: newUser.id,
-        role: newUser.role,
-        fullName: newUser.full_name,
-        email: newUser.email,
+        userId: user.id,
+        role: user.role,
+        fullName: user.full_name,
+        email: user.email,
       });
     }
 
